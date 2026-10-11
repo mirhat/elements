@@ -516,6 +516,30 @@
     });
   }
 
+  // Any image URL (PNG, JPG, SVG) as a PNG data URL for the PDF. Fails for images the page may not read.
+  function loadImageData(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const ratio = img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : 1;
+        const h = 240;
+        const w = Math.round(h * ratio);
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        try {
+          resolve({ data: c.toDataURL('image/png'), w, h });
+        } catch (e) {
+          reject(e);
+        }
+      };
+      img.onerror = () => reject(new Error('logo: ' + url));
+      img.src = url;
+    });
+  }
+
   function createScene3D(THREE, ctx) {
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
@@ -1390,7 +1414,7 @@ button{font:inherit;color:inherit}
     worktopColor: null,
     theme: null,          // { accent: '#…', bg: '#…', … } → --kp-accent, --kp-bg, …
     labels: null,
-    pdf: null,            // { title, company, footer } printed on the PDF
+    pdf: null,            // { title, company, logo, footer } printed on the PDF
     jspdf: null,          // a loaded jsPDF constructor, if the site already has one
     jspdfUrl: null,       // otherwise it is loaded from here (default: jsDelivr)
     pdfFonts: null,       // { normal, bold } TTF URLs (default: Roboto from jsDelivr)
@@ -2153,12 +2177,13 @@ button{font:inherit;color:inherit}
         const fontUrls = Object.assign({}, PDF_FONTS, opts.pdfFonts);
         const [JsPDF, regular, bold] = await Promise.all([loadJsPdf(opts), loadFontBase64(fontUrls.normal), loadFontBase64(fontUrls.bold)]);
         const shot = await snapshot3d().catch(() => null);
+        const logo = opts.pdf && opts.pdf.logo ? await loadImageData(opts.pdf.logo).catch(() => null) : null;
         const walls = await Promise.all(state.walls.map((w, i) => {
           const { svg, w: vw, h: vh } = wallSvg(w, i);
           const k = clamp(1800 / vw, 3, 8);
           return rasterize(svg, Math.round(vw * k), Math.round(vh * k));
         }));
-        buildPdf(JsPDF, regular, bold, shot, walls).save(`${L.fileName}-${fileDay()}.pdf`);
+        buildPdf(JsPDF, regular, bold, shot, walls, logo).save(`${L.fileName}-${fileDay()}.pdf`);
       } catch (err) {
         if (typeof console !== 'undefined') console.error(err);
         toast(L.pdfError);
@@ -2168,7 +2193,7 @@ button{font:inherit;color:inherit}
       }
     }
 
-    function buildPdf(JsPDF, regular, bold, shot, wallImages) {
+    function buildPdf(JsPDF, regular, bold, shot, wallImages, logo) {
       const doc = new JsPDF({ unit: 'mm', format: 'a4', compress: true });
       doc.addFileToVFS('Roboto-Regular.ttf', regular);
       doc.addFont('Roboto-Regular.ttf', 'Roboto', 'normal');
@@ -2207,11 +2232,19 @@ button{font:inherit;color:inherit}
       const walls = state.walls.map(w => `${L.wall.toLowerCase()} ${w.id} ${w.width} cm`).join(', ');
       const subtitle = [`${L.series} ${used.join(', ')}`, layout, walls].join(' · ');
 
-      font('bold', 10, '#686d74');
-      if (P.company) doc.text(P.company, M, y + 3);
+      // Header: shop logo and name on the left, date on the right.
+      let hx = M;
+      if (logo) {
+        const lh = 10;
+        const lw = Math.min(45, lh * logo.w / logo.h);
+        doc.addImage(logo.data, 'PNG', M, y, lw, lh);
+        hx += lw + 3;
+      }
+      font('bold', 10.5, '#4b4f55');
+      if (P.company) doc.text(P.company, hx, y + (logo ? 6.4 : 3));
       font('normal', 10, '#686d74');
-      doc.text(new Date().toLocaleDateString(opts.locale), pageW - M, y + 3, { align: 'right' });
-      y += 11;
+      doc.text(new Date().toLocaleDateString(opts.locale), pageW - M, y + (logo ? 6.4 : 3), { align: 'right' });
+      y += logo ? 16 : 11;
       font('bold', 20);
       doc.text(P.title, M, y + 6);
       y += 11;

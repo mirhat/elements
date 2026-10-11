@@ -1,3 +1,5 @@
+<p><img src="brand/logo.svg" alt="Planer kuhinje" height="64"></p>
+
 # KitchenPlanner
 
 Drag & drop planer kuhinja iz elemenata za web prodavnice. Kupac bira liniju (Aria, Una, Tisa…), prevlači elemente na zidove (I, L ili U raspored), gleda kuhinju u 2D i 3D i preuzima PDF sa 3D slikom, crtežima zidova i spiskom elemenata.
@@ -51,7 +53,7 @@ Demo se objavljuje iz grane `gh-pages`. Nakon izmjena: `git push origin main:gh-
 | `theme` | Boje, npr. `{ accent: '#a33', bg: '#fff', wall: '#eee' }` (postaje `--kp-accent`…). |
 | `labels` | Prevod ili izmjena bilo kojeg teksta u sučelju. |
 | `storageKey`, `autosave` | Kuhinja se sama čuva u pregledniku kupca. |
-| `pdf` | Tekst na PDF-u: `{ title, company, footer }` (naslov, naziv prodavnice gore, kontakt dolje). |
+| `pdf` | Zaglavlje i podnožje PDF-a: `{ title, company, logo, footer }` (naslov, naziv prodavnice, URL loga sa istog domena, kontakt dolje). |
 | `three` / `threeUrl` | Ako sajt već ima three.js, ili ga hostuje sam (zadano: jsDelivr, three@0.160.0). |
 | `jspdf` / `jspdfUrl`, `pdfFonts` | Isto za jsPDF (zadano jspdf@2.5.2) i TTF fontove `{ normal, bold }` (zadano Roboto). |
 | `onCheckout`, `onChange`, `onReady` | Callback funkcije. `onCheckout(order)` dodaje dugme "Pošalji upit"; `order.lines` = `[{ id, sku, name, qty, unitPrice, total }]`, plus `order.total` i `order.design`. |

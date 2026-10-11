@@ -4,10 +4,27 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Planer kuhinje – demo</title>
+  <link rel="icon" href="../brand/logo-mark.svg" type="image/svg+xml">
+  <link rel="icon" href="../brand/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="../brand/apple-touch-icon.png">
+  <meta name="theme-color" content="#2f6f62">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Planer kuhinje">
+  <meta property="og:title" content="Planer kuhinje – demo">
+  <meta property="og:description" content="Kupac sam složi kuhinju iz vaših elemenata: L i U kuhinje, 3D prikaz i PDF sa spiskom elemenata i cijenom.">
+  <meta property="og:image" content="https://mirhat.github.io/elements/brand/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:url" content="https://mirhat.github.io/elements/">
+  <meta name="twitter:card" content="summary_large_image">
   <meta name="description" content="Planer kuhinje iz elemenata za web prodavnice: drag & drop, L i U kuhinje, 2D i 3D prikaz, PDF sa crtežima i spiskom elemenata.">
   <style>
     body { margin: 0; background: #f4f2ee; color: #23262a; font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-    .shop-bar { padding: 14px 20px; background: #23262a; color: #fff; font-weight: 600; }
+    .top { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: #fff; border-bottom: 1px solid #e3e0d9; }
+    .brand { display: flex; align-items: center; gap: 10px; color: #1d2125; text-decoration: none; font-size: 21px; letter-spacing: -.2px; }
+    .brand b { font-weight: 800; }
+    .brand em { font-style: normal; color: #2f6f62; }
+    .badge { padding: 3px 9px; border-radius: 999px; background: #e3efeb; color: #2f6f62; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
     main { max-width: 1440px; margin: 0 auto; padding: 24px 16px 56px; }
     h1 { margin: 0 0 6px; font-size: 28px; line-height: 1.2; }
     .lead { margin: 0 0 10px; max-width: 75ch; font-size: 16px; }
@@ -17,7 +34,10 @@
   </style>
 </head>
 <body>
-  <div class="shop-bar">Demo prodavnica namještaja</div>
+  <header class="top">
+    <a class="brand" href="index.html"><img src="../brand/logo-mark.svg" width="36" height="36" alt=""><span><b>Planer</b> <em>kuhinje</em></span></a>
+    <span class="badge">demo</span>
+  </header>
   <main>
     <h1>Složi svoju kuhinju</h1>
     <p class="lead">Ovako planer izgleda ugrađen u web prodavnicu. Kupac bira liniju kuhinje, prevlači elemente na zidove, gleda kuhinju u 2D i 3D i preuzima PDF sa crtežima i tačnim spiskom elemenata.</p>
@@ -56,6 +76,7 @@
       defaultDesign: PRIMJER,
       pdf: {
         company: 'Demo prodavnica namještaja',
+        logo: '../brand/logo-mark.svg',
         footer: 'Demo planera kuhinje · cijene su izmišljene',
       },
       // Demo cijene, izmišljene
