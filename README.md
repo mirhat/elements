@@ -46,6 +46,8 @@ Demo se objavljuje iz grane `gh-pages`. Nakon izmjena: `git push origin main:gh-
 | `prices` / `getPrice` | Cijene po šifri ili id-u, ili funkcija. Bez cijene piše "Cijena na upit". |
 | `currency`, `locale` | Zadano `BAM` i `hr-HR` (`1.332,50 KM`). |
 | `walls` | Početni zidovi, npr. `[{ width: 300 }, { width: 240 }]` za L. |
+| `defaultDesign` | Primjer kuhinje (iz `getDesign()` ili upita) koji vidi posjetilac koji još nema svoju sačuvanu. Njegove izmjene se dalje čuvaju. |
+| `design` | Kuhinja koja se učita svaki put, bez obzira na sačuvanu. |
 | `defaultSeries` | Linija koja je izabrana na početku. |
 | `theme` | Boje, npr. `{ accent: '#a33', bg: '#fff', wall: '#eee' }` (postaje `--kp-accent`…). |
 | `labels` | Prevod ili izmjena bilo kojeg teksta u sučelju. |

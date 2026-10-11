@@ -1285,7 +1285,8 @@ button{font:inherit;color:inherit}
     elementsUrl: null,    // or a URL returning such an array
     adapter: null,        // (rawItem) => normalized element, for other shop formats
     walls: null,          // [{ width: 300 }, …]
-    design: null,         // a design from getDesign() to start with
+    design: null,         // a design from getDesign() to start with, every time
+    defaultDesign: null,  // a design shown only to visitors who have nothing saved yet
     defaultSeries: null,
     prices: null,         // { [sku or id]: price }
     getPrice: null,       // (element) => price | null
@@ -2064,7 +2065,7 @@ button{font:inherit;color:inherit}
         file: q('.kp-file'),
       };
 
-      const saved = opts.design || readStorage();
+      const saved = opts.design || readStorage() || opts.defaultDesign;
       if (!loadDesignInto(saved)) {
         state.walls = (opts.walls || [{ width: 300 }]).slice(0, MAX_WALLS)
           .map((w, i) => ({ id: WALL_IDS[i], width: clamp(Math.round(+w.width) || 300, 60, 1200) }));

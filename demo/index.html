@@ -75,10 +75,25 @@
       document.getElementById('order').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
+    // Primjer kuhinje koji vidi svako ko prvi put otvori demo (iz kuhinja-2026-10-11.csv)
+    const PRIMJER = {
+      v: 1,
+      walls: [{ id: 'A', width: 205 }, { id: 'B', width: 242 }],
+      items: [
+        { id: 3618, wall: 'A', x: 0 }, { id: 3626, wall: 'A', x: 60 }, { id: 3615, wall: 'A', x: 120 },
+        { id: 3624, wall: 'A', x: 5 }, { id: 3625, wall: 'A', x: 65 }, { id: 3614, wall: 'A', x: 145 },
+        { id: 3617, wall: 'B', x: 82 }, { id: 3609, wall: 'B', x: 122 }, { id: 3613, wall: 'B', x: 182 },
+        { id: 3624, wall: 'B', x: 60 }, { id: 3612, wall: 'B', x: 122 },
+      ],
+      plinth: { color: null, include: false },
+      series: 'Aria',
+    };
+
     window.planer = KitchenPlanner.create({
       container: '#planer',
       elements: window.KP_ELEMENTS,
       storageKey: 'demo',
+      defaultDesign: PRIMJER,
       // Demo cijene, izmišljene
       getPrice: el => el.type === 'plinth'
         ? Math.round(el.width * 0.09)
