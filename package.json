@@ -1,0 +1,11 @@
+{
+  "name": "kitchen-planner",
+  "version": "0.1.0",
+  "description": "Drag & drop planer kuhinja iz elemenata (2D i 3D) za web prodavnice",
+  "main": "src/kitchen-planner.js",
+  "repository": "github:mirhat/elements",
+  "private": true,
+  "scripts": {
+    "katalog": "node scripts/build-catalog.js"
+  }
+}
