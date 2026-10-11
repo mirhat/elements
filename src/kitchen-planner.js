@@ -359,7 +359,8 @@
    * SVG front view of one element (units: cm).
    * opt.thumb keeps the aspect ratio in a fixed box, opt.legs=false leaves out the plinth,
    * opt.gloss=false drops the painted shine (the 3D view has real reflections), opt.size=[w,h] in px,
-   * opt.width + opt.segments draw an explicit row of doors / side panels (corner units).
+   * opt.width + opt.segments draw an explicit row of doors / side panels (corner units),
+   * opt.attrs adds attributes such as x/y/width/height for use inside another SVG.
    */
   function drawSvg(el, opt) {
     opt = opt || {};
@@ -373,7 +374,8 @@
     s += rect(0, 0, w, ch, el.corpusColor);
     s += opt.segments ? drawSegments(el, opt.segments, ch, opt.gloss !== false) : drawFronts(el, 0.5, 0.5, w - 1, ch - 1, opt.gloss !== false);
     const size = opt.size ? ` width="${opt.size[0]}" height="${opt.size[1]}"` : '';
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}"${size} preserveAspectRatio="${opt.thumb ? 'xMidYMax meet' : 'none'}" aria-hidden="true" focusable="false">${s}</svg>`;
+    const attrs = opt.attrs ? ' ' + opt.attrs : '';
+    return `<svg xmlns="http://www.w3.org/2000/svg"${attrs} viewBox="0 0 ${w} ${h}"${size} preserveAspectRatio="${opt.thumb ? 'xMidYMax meet' : 'none'}" aria-hidden="true" focusable="false">${s}</svg>`;
   }
 
   function drawSegments(el, segments, h, shine) {
@@ -454,6 +456,66 @@
     return threeLoads.get(url);
   }
 
+  // ---------------------------------------------------------------------------
+  // PDF. jsPDF and the Roboto font (č, ć, đ, š, ž) are loaded only when a PDF is made.
+  // ---------------------------------------------------------------------------
+
+  const JSPDF_URL = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js';
+  const PDF_FONTS = {
+    normal: 'https://cdn.jsdelivr.net/npm/@expo-google-fonts/roboto@0.2.3/Roboto_400Regular.ttf',
+    bold: 'https://cdn.jsdelivr.net/npm/@expo-google-fonts/roboto@0.2.3/Roboto_700Bold.ttf',
+  };
+  const urlLoads = new Map();
+
+  function once(key, make) {
+    if (!urlLoads.has(key)) urlLoads.set(key, make().catch(err => { urlLoads.delete(key); throw err; }));
+    return urlLoads.get(key);
+  }
+
+  function loadJsPdf(opts) {
+    if (opts.jspdf) return Promise.resolve(opts.jspdf);
+    if (window.jspdf && window.jspdf.jsPDF) return Promise.resolve(window.jspdf.jsPDF);
+    const url = opts.jspdfUrl || JSPDF_URL;
+    return once(url, () => new Promise((resolve, reject) => {
+      const tag = document.createElement('script');
+      tag.src = url;
+      tag.async = true;
+      tag.onload = () => (window.jspdf && window.jspdf.jsPDF ? resolve(window.jspdf.jsPDF) : reject(new Error('jsPDF')));
+      tag.onerror = () => reject(new Error('jsPDF: ' + url));
+      document.head.appendChild(tag);
+    }));
+  }
+
+  function loadFontBase64(url) {
+    return once(url, () => fetch(url).then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + url);
+      return r.arrayBuffer();
+    }).then(buf => {
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      return btoa(bin);
+    }));
+  }
+
+  function rasterize(svg, pw, ph) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        c.width = pw;
+        c.height = ph;
+        const g = c.getContext('2d');
+        g.fillStyle = '#fff';
+        g.fillRect(0, 0, pw, ph);
+        g.drawImage(img, 0, 0, pw, ph);
+        resolve({ data: c.toDataURL('image/png'), w: pw, h: ph });
+      };
+      img.onerror = () => reject(new Error('SVG'));
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    });
+  }
+
   function createScene3D(THREE, ctx) {
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
@@ -495,6 +557,7 @@
     let wallCount = -1;
     let raf = 0;
     let disposed = false;
+    const textureLoads = [];
 
     function requestRender() {
       if (raf || disposed) return;
@@ -538,7 +601,11 @@
       const pw = Math.round(w * k);
       const ph = Math.round(h * k);
       const img = new Image();
+      let loaded;
+      textureLoads.push(new Promise(res => { loaded = res; }));
+      img.onerror = () => loaded();
       img.onload = () => {
+        loaded();
         if (disposed) return;
         const c = document.createElement('canvas');
         c.width = pw;
@@ -942,7 +1009,20 @@
     }
 
     resize();
-    return { canvas, rebuild, resize, contains, pickItem, wallHit, showPreview, hidePreview, setSelected, setHidden, rotate, zoom, resetView, topView, dispose };
+    // Still image from the starting view, once all front textures are drawn.
+    function snapshot(w, h) {
+      return Promise.all(textureLoads).then(() => {
+        renderer.setPixelRatio(1);
+        renderer.setSize(w, h, false);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        resetView();
+        renderer.render(scene, camera);
+        return { data: canvas.toDataURL('image/jpeg', 0.9), w, h };
+      });
+    }
+
+    return { canvas, rebuild, resize, contains, pickItem, wallHit, showPreview, hidePreview, setSelected, setHidden, rotate, zoom, resetView, topView, snapshot, dispose };
   }
 
   // ---------------------------------------------------------------------------
@@ -1018,6 +1098,15 @@
     plinthSuggest: 'Prijedlog',
     checkout: 'Pošalji upit',
     exportCsv: 'Preuzmi specifikaciju (CSV)',
+    pdf: 'Preuzmi PDF',
+    pdfBusy: 'Pripremam PDF…',
+    pdfError: 'PDF se nije mogao napraviti. Provjerite internet vezu i pokušajte ponovo.',
+    pdfTitle: 'Specifikacija kuhinje',
+    pdfWalls: 'Zidovi',
+    pdfElements: 'Elementi',
+    pdfCols: ['Kom', 'Šifra', 'Naziv', 'Š × V × D', 'Cijena', 'Ukupno'],
+    pdfOnRequest: 'na upit',
+    pdfPage: (p, n) => `Strana ${p} / ${n}`,
     remove: 'Ukloni',
     duplicate: 'Dupliraj',
     moveLeft: 'Pomjeri lijevo',
@@ -1178,8 +1267,10 @@ button{font:inherit;color:inherit}
 .kp-toast{position:absolute;left:50%;top:62px;z-index:10;max-width:90%;padding:8px 14px;border-radius:8px;background:#1f2328;color:#fff;font-size:13px;box-shadow:0 6px 18px rgba(0,0,0,.18);opacity:0;transform:translate(-50%,-6px);transition:opacity .2s,transform .2s;pointer-events:none}
 .kp-toast.is-on{opacity:1;transform:translate(-50%,0)}
 
-.kp-summary{grid-area:sum;display:flex;flex-direction:column;gap:14px;min-height:0;overflow:auto;padding:16px;border-left:1px solid var(--kp-border)}
-.kp-sum-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.kp-summary{grid-area:sum;display:flex;flex-direction:column;min-height:0;overflow:hidden;border-left:1px solid var(--kp-border)}
+.kp-sum-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:16px 16px 6px}
+.kp-sum-body{flex:1;min-height:0;overflow:auto;display:grid;gap:14px;align-content:start;padding:0 16px 14px}
+.kp-sum-foot{display:grid;gap:10px;padding:12px 16px 16px;border-top:1px solid var(--kp-border);background:var(--kp-bg)}
 .kp-sum-head h3{margin:0;font-size:16px}
 .kp-lines{list-style:none;margin:0;padding:0;display:grid;gap:2px}
 .kp-line{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:baseline;padding:7px 0;border-bottom:1px solid var(--kp-border);font-size:13.5px}
@@ -1192,7 +1283,7 @@ button{font:inherit;color:inherit}
 .kp-extra strong{font-variant-numeric:tabular-nums}
 .kp-check{display:flex;align-items:center;gap:8px;cursor:pointer}
 .kp-check input{width:16px;height:16px;accent-color:var(--kp-accent);margin:0}
-.kp-total{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding-top:4px;font-size:15px}
+.kp-total{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:15px}
 .kp-total strong{font-size:20px;font-variant-numeric:tabular-nums}
 .kp-actions{display:grid;gap:8px}
 
@@ -1202,6 +1293,7 @@ button{font:inherit;color:inherit}
   .kp-walls{overflow:visible}
   .kp-3d{flex:none;height:min(72vh,560px)}
   .kp-summary{border-left:0;border-top:1px solid var(--kp-border);overflow:visible}
+  .kp-sum-body{overflow:visible}
 }
 @container kp (max-width:720px){
   .kp{grid-template-columns:minmax(0,1fr);grid-template-areas:"main" "cat" "sum";min-height:0}
@@ -1298,6 +1390,10 @@ button{font:inherit;color:inherit}
     worktopColor: null,
     theme: null,          // { accent: '#…', bg: '#…', … } → --kp-accent, --kp-bg, …
     labels: null,
+    pdf: null,            // { title, company, footer } printed on the PDF
+    jspdf: null,          // a loaded jsPDF constructor, if the site already has one
+    jspdfUrl: null,       // otherwise it is loaded from here (default: jsDelivr)
+    pdfFonts: null,       // { normal, bold } TTF URLs (default: Roboto from jsDelivr)
     three: null,          // a loaded three.js module, if the site already has one
     threeUrl: null,       // otherwise it is imported from here when the 3D view opens (default: jsDelivr)
     onCheckout: null,     // (order) => void; shows the "send" button when set
@@ -1358,6 +1454,7 @@ button{font:inherit;color:inherit}
     let lastAdded = null;
     let focusUid = null;
     let destroyed = false;
+    let pdfBusy = false;
     let scene3d = null;
     let loading3d = null;
     let orbitDrag = null;
@@ -1953,7 +2050,10 @@ button{font:inherit;color:inherit}
       const t = String(text).replace(/^\ufeff/, '').trim();
       let design = null;
       try {
-        if (t.startsWith('{')) {
+        if (t.startsWith('%PDF')) {
+          const m = t.match(/kitchen-planner v1:([A-Za-z0-9+/=]+)/);
+          design = m ? JSON.parse(fromBase64(m[1])) : null;
+        } else if (t.startsWith('{')) {
           const j = JSON.parse(t);
           design = j.design || j;
         } else {
@@ -1983,17 +2083,255 @@ button{font:inherit;color:inherit}
       return true;
     }
 
+    // One wall as a single SVG (cm units): front view plus the dimension lines below it.
+    function wallSvg(wall, index) {
+      const W = wall.width;
+      const H = stageHeight;
+      const items = state.items.filter(i => i.wall === wall.id);
+      const blocks = cornerBlocks(index);
+      const place = (x, bottom, w, h) => `x="${n2(x)}" y="${n2(H - bottom - h)}" width="${n2(w)}" height="${n2(h)}"`;
+      const out = [`<rect width="${W}" height="${H}" fill="#f4f2ec"/>`, `<rect y="${H}" width="${W}" height="1.2" fill="#b9b1a2"/>`];
+      blocks.forEach(b => {
+        const y = b.el.zone === 'wall' ? wallTop - b.el.height : 0;
+        const segs = cornerKind(b.el) === 'L' || cornerKind(b.el) === 'diagonal'
+          ? cornerSegments(b.el, b.atStart ? 'left' : 'right', armOf(b.el), b.w)
+          : [{ x: 0, w: b.w, kind: 'side' }];
+        out.push(`<g opacity=".8">${drawSvg(b.el, { width: b.w, segments: segs, attrs: place(b.x, y, b.w, renderHeight(b.el)) })}</g>`);
+      });
+      const worktop = themeColors().worktop;
+      worktopRuns(items, blocks).forEach(r => out.push(`<rect ${place(r.x, BASE_HEIGHT, r.w, WORKTOP)} fill="${worktop}" stroke="rgba(0,0,0,.25)" stroke-width="0.3"/>`));
+      items.forEach(i => {
+        const el = get(i.id);
+        const y = el.zone === 'wall' ? wallTop - el.height : 0;
+        const side = cornerSideOf(i);
+        out.push(drawSvg(el, { segments: side ? cornerSegments(el, side, armOf(el)) : null, attrs: place(i.x, y, el.width, renderHeight(el)) }));
+        if (el.type === 'sink') out.push(FAUCET_SVG.replace('<svg ', `<svg ${place(i.x + el.width / 2 - 8, BASE_HEIGHT + WORKTOP, 16, 24)} `));
+        if (el.type === 'oven') out.push(`<rect ${place(i.x + 5, BASE_HEIGHT + WORKTOP, el.width - 10, 1.4)} fill="#26292d"/>`);
+      });
+      const font = 'font-family="Helvetica, Arial, sans-serif" text-anchor="middle"';
+      const line = (x, y, w, color) => `<path d="M${n2(x)} ${y}h${n2(w)}M${n2(x)} ${y - 1.6}v3.2M${n2(x + w)} ${y - 1.6}v3.2" stroke="${color}" stroke-width="0.35" fill="none"/>`;
+      dimSegments(items, W).forEach(sg => {
+        out.push(line(sg.x, H + 12, sg.w, sg.gap ? '#aaa' : '#555'));
+        if (sg.w >= 10) out.push(`<text x="${n2(sg.x + sg.w / 2)}" y="${H + 10}" font-size="6.5" fill="${sg.gap ? '#999' : '#333'}" ${font}>${sg.w}</text>`);
+      });
+      out.push(line(0, H + 27, W, '#333'));
+      out.push(`<text x="${n2(W / 2)}" y="${H + 25}" font-size="7" font-weight="bold" fill="#222" ${font}>${W} cm</text>`);
+      return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 0 ${W + 4} ${H + 30}">${out.join('')}</svg>`, w: W + 4, h: H + 30 };
+    }
+
+    // The 3D picture is made in a hidden scene, so it works even if the 3D view was never opened.
+    function snapshot3d() {
+      return loadThree(opts).then(THREE => {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position:fixed;left:-10000px;top:0;width:800px;height:500px;';
+        rootEl.appendChild(wrap);
+        let s = null;
+        try {
+          s = createScene3D(THREE, sceneContext(wrap));
+          s.rebuild();
+        } catch (e) {
+          wrap.remove();
+          throw e;
+        }
+        return s.snapshot(1600, 900).finally(() => {
+          s.dispose();
+          wrap.remove();
+        });
+      });
+    }
+
+    function fileDay() {
+      const d = new Date();
+      return [d.getFullYear(), d.getMonth() + 1, d.getDate()].map(v => String(v).padStart(2, '0')).join('-');
+    }
+
+    async function exportPdf() {
+      if (pdfBusy || !state.items.length) return;
+      pdfBusy = true;
+      renderSummary();
+      try {
+        const fontUrls = Object.assign({}, PDF_FONTS, opts.pdfFonts);
+        const [JsPDF, regular, bold] = await Promise.all([loadJsPdf(opts), loadFontBase64(fontUrls.normal), loadFontBase64(fontUrls.bold)]);
+        const shot = await snapshot3d().catch(() => null);
+        const walls = await Promise.all(state.walls.map((w, i) => {
+          const { svg, w: vw, h: vh } = wallSvg(w, i);
+          const k = clamp(1800 / vw, 3, 8);
+          return rasterize(svg, Math.round(vw * k), Math.round(vh * k));
+        }));
+        buildPdf(JsPDF, regular, bold, shot, walls).save(`${L.fileName}-${fileDay()}.pdf`);
+      } catch (err) {
+        if (typeof console !== 'undefined') console.error(err);
+        toast(L.pdfError);
+      } finally {
+        pdfBusy = false;
+        renderSummary();
+      }
+    }
+
+    function buildPdf(JsPDF, regular, bold, shot, wallImages) {
+      const doc = new JsPDF({ unit: 'mm', format: 'a4', compress: true });
+      doc.addFileToVFS('Roboto-Regular.ttf', regular);
+      doc.addFont('Roboto-Regular.ttf', 'Roboto', 'normal');
+      doc.addFileToVFS('Roboto-Bold.ttf', bold);
+      doc.addFont('Roboto-Bold.ttf', 'Roboto', 'bold');
+      doc.setLineHeightFactor(1.3);
+      const P = Object.assign({ title: L.pdfTitle, company: '', footer: '' }, opts.pdf);
+      const pageW = 210;
+      const pageH = 297;
+      const M = 14;
+      const CW = pageW - 2 * M;
+      const bottom = pageH - 16;
+      const money = v => nf.format(v).replace(/\u202f/g, '\u00a0');
+      const font = (style, size, color) => {
+        doc.setFont('Roboto', style);
+        doc.setFontSize(size);
+        doc.setTextColor(color || '#1d2125');
+      };
+      let y = M;
+      const fits = h => {
+        if (y + h <= bottom) return true;
+        doc.addPage();
+        y = M;
+        return false;
+      };
+      const heading = (text, next) => {
+        fits(14 + (next || 0));
+        font('bold', 13);
+        doc.text(text, M, y + 5);
+        y += 9;
+      };
+
+      const order = buildOrder();
+      const used = [...new Set(state.items.map(i => get(i.id).series))];
+      const layout = L.layouts[state.walls.length - 1] || `${state.walls.length} × ${L.wall.toLowerCase()}`;
+      const walls = state.walls.map(w => `${L.wall.toLowerCase()} ${w.id} ${w.width} cm`).join(', ');
+      const subtitle = [`${L.series} ${used.join(', ')}`, layout, walls].join(' · ');
+
+      font('bold', 10, '#686d74');
+      if (P.company) doc.text(P.company, M, y + 3);
+      font('normal', 10, '#686d74');
+      doc.text(new Date().toLocaleDateString(opts.locale), pageW - M, y + 3, { align: 'right' });
+      y += 11;
+      font('bold', 20);
+      doc.text(P.title, M, y + 6);
+      y += 11;
+      font('normal', 10.5, '#4b4f55');
+      const sub = doc.splitTextToSize(subtitle, CW);
+      doc.text(sub, M, y + 4);
+      y += sub.length * 5 + 5;
+
+      if (shot) {
+        const h = CW * shot.h / shot.w;
+        doc.addImage(shot.data, 'JPEG', M, y, CW, h);
+        y += h + 8;
+      }
+
+      heading(L.pdfElements, 16);
+      const cols = [
+        { w: 11, align: 'right' }, { w: 21 }, { w: 82 }, { w: 26 }, { w: 20, align: 'right' }, { w: 22, align: 'right' },
+      ].map((c, i) => Object.assign(c, { label: L.pdfCols[i] }));
+      const cell = (c, x) => (c.align === 'right' ? x + c.w - 1.5 : x + 1.5);
+      const head = () => {
+        doc.setFillColor('#f2f0eb');
+        doc.rect(M, y, CW, 7, 'F');
+        font('bold', 8.5, '#55595f');
+        let x = M;
+        cols.forEach(c => {
+          doc.text(c.label, cell(c, x), y + 4.8, { align: c.align || 'left' });
+          x += c.w;
+        });
+        y += 7;
+      };
+      fits(16);
+      head();
+      order.lines.forEach(l => {
+        const el = get(l.id);
+        font('normal', 9);
+        const name = doc.splitTextToSize(String(l.name).replace(/^Kuhinja\s+/i, ''), cols[2].w - 3);
+        const h = name.length * 4.1 + 3;
+        if (!fits(h)) head();
+        font('normal', 9);
+        const values = [
+          `${l.qty}×`,
+          String(l.sku),
+          name,
+          el ? `${el.width}×${el.height}×${el.depth}` : '',
+          l.unitPrice != null ? money(l.unitPrice) : '—',
+          l.total != null ? money(l.total) : L.pdfOnRequest,
+        ];
+        let x = M;
+        cols.forEach((c, i) => {
+          doc.text(values[i], cell(c, x), y + 4.6, { align: c.align || 'left' });
+          x += c.w;
+        });
+        y += h;
+        doc.setDrawColor('#e6e3dc');
+        doc.line(M, y, M + CW, y);
+      });
+
+      fits(15 + (order.worktopCm ? 5 : 0) + (order.plinthCm ? 5 : 0));
+      y += 6;
+      font('bold', 12);
+      doc.text(order.total != null ? (order.complete ? L.total : L.totalPartial) : L.total, M, y);
+      doc.text(order.total != null ? money(order.total) : L.priceOnRequest, M + CW, y, { align: 'right' });
+      y += 7;
+      font('normal', 9.5, '#4b4f55');
+      if (order.worktopCm) {
+        doc.text(`${L.worktop}: ${order.worktopCm} cm`, M, y);
+        y += 5;
+      }
+      if (order.plinthCm) {
+        doc.text(`${L.plinth}: ${order.plinthCm} cm`, M, y);
+        y += 5;
+      }
+
+      // Wall drawings start on a fresh page, centred and as large as the page allows.
+      const sizes = wallImages.map(img => {
+        let w = CW;
+        let h = w * img.h / img.w;
+        if (h > 112) {
+          h = 112;
+          w = h * img.w / img.h;
+        }
+        return { w, h };
+      });
+      if (wallImages.length) {
+        doc.addPage();
+        y = M;
+        heading(L.pdfWalls, sizes[0].h + 6);
+      }
+      wallImages.forEach((img, i) => {
+        const { w, h } = sizes[i];
+        fits(h + 8);
+        font('bold', 10.5);
+        doc.text(`${L.wall} ${state.walls[i].id}`, M, y + 4);
+        y += 6;
+        doc.addImage(img.data, 'PNG', M + (CW - w) / 2, y, w, h);
+        y += h + 6;
+      });
+
+      const pages = doc.getNumberOfPages();
+      for (let p = 1; p <= pages; p++) {
+        doc.setPage(p);
+        font('normal', 8.5, '#868a90');
+        if (P.footer) doc.text(String(P.footer), M, pageH - 8);
+        doc.text(L.pdfPage(p, pages), pageW - M, pageH - 8, { align: 'right' });
+      }
+      // The design rides along in the PDF properties, so "Učitaj specifikaciju" can read it back.
+      const design = Object.assign(getDesign(), { series: state.ui.series });
+      doc.setProperties({ title: P.title, subject: subtitle, creator: 'KitchenPlanner ' + VERSION, keywords: CSV_MARKER + ' v1:' + toBase64(JSON.stringify(design)) });
+      return doc;
+    }
+
     function importFile(file) {
       return file.text().then(importText);
     }
 
     function exportCsv() {
       const csv = buildCsv();
-      const d = new Date();
-      const day = [d.getFullYear(), d.getMonth() + 1, d.getDate()].map(v => String(v).padStart(2, '0')).join('-');
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-      a.download = `${L.fileName}-${day}.csv`;
+      a.download = `${L.fileName}-${fileDay()}.csv`;
       shadow.appendChild(a);
       a.click();
       a.remove();
@@ -2041,7 +2379,7 @@ button{font:inherit;color:inherit}
     </div>
     <div class="kp-inspector"></div>
     <div class="kp-toast" role="status" aria-live="polite"></div>
-    <input type="file" class="kp-file" accept=".csv,.json,text/csv,application/json" hidden>
+    <input type="file" class="kp-file" accept=".pdf,.csv,.json,application/pdf,text/csv,application/json" hidden>
   </section>
   <aside class="kp-summary" aria-live="polite"></aside>
 </div>`;
@@ -2269,7 +2607,8 @@ button{font:inherit;color:inherit}
       return runs;
     }
 
-    function dimsHtml(items, W) {
+    // Widths along the base row (base and tall units) and the gaps between them.
+    function dimSegments(items, W) {
       const occ = items.map(i => ({ x: i.x, w: get(i.id).width, zone: get(i.id).zone }))
         .filter(o => o.zone !== 'wall')
         .sort((a, b) => a.x - b.x);
@@ -2281,8 +2620,11 @@ button{font:inherit;color:inherit}
         cur = Math.max(cur, o.x + o.w);
       });
       if (cur < W) segs.push({ x: cur, w: W - cur, gap: true });
-      if (segs.length === 1 && segs[0].gap) return '';
-      return segs.map(s => `<div class="kp-dim${s.gap ? ' is-gap' : ''}" style="left:${px(s.x)};width:${px(s.w)}">${s.w * scale >= 22 ? `<span>${s.w}</span>` : ''}</div>`).join('');
+      return segs.length === 1 && segs[0].gap ? [] : segs;
+    }
+
+    function dimsHtml(items, W) {
+      return dimSegments(items, W).map(s => `<div class="kp-dim${s.gap ? ' is-gap' : ''}" style="left:${px(s.x)};width:${px(s.w)}">${s.w * scale >= 22 ? `<span>${s.w}</span>` : ''}</div>`).join('');
     }
 
     function renderInspector() {
@@ -2317,8 +2659,11 @@ ${el.images[0] ? `<img class="kp-photo" src="${esc(el.images[0])}" alt="" loadin
       const plinth = state.items.length ? plinthInfo() : null;
       const head = `<div class="kp-sum-head"><h3>${esc(L.summary)}</h3><span class="kp-muted">${esc(L.elementsCount(o.count))}</span></div>`;
       const importBtn = `<button type="button" class="kp-btn" data-act="import">${esc(L.importSpec)}</button>`;
+      // Only the list scrolls; the total and the buttons stay in view below it.
+      const oldBody = els.sum.querySelector('.kp-sum-body');
+      const scrollTop = oldBody ? oldBody.scrollTop : 0;
       if (!o.count) {
-        els.sum.innerHTML = head + `<p class="kp-muted">${esc(L.emptySummary)}</p><div class="kp-actions">${importBtn}</div>`;
+        els.sum.innerHTML = head + `<div class="kp-sum-body"><p class="kp-muted">${esc(L.emptySummary)}</p></div><div class="kp-sum-foot"><div class="kp-actions">${importBtn}</div></div>`;
         return;
       }
       const lines = o.lines.map(l => `<li class="kp-line">
@@ -2341,14 +2686,14 @@ ${el.images[0] ? `<img class="kp-photo" src="${esc(el.images[0])}" alt="" loadin
         ? `<div class="kp-total"><span>${esc(o.complete ? L.total : L.totalPartial)}</span><strong>${esc(nf.format(o.total))}</strong></div>`
         : `<div class="kp-total"><span>${esc(L.total)}</span><strong style="font-size:15px">${esc(L.priceOnRequest)}</strong></div>`;
       els.sum.innerHTML = head +
-        `<ul class="kp-lines">${lines}</ul>` +
-        (extras ? `<div class="kp-extras">${extras}</div>` : '') +
-        total +
-        `<div class="kp-actions">
+        `<div class="kp-sum-body"><ul class="kp-lines">${lines}</ul>${extras ? `<div class="kp-extras">${extras}</div>` : ''}</div>` +
+        `<div class="kp-sum-foot">${total}<div class="kp-actions">
   ${typeof opts.onCheckout === 'function' ? `<button type="button" class="kp-btn kp-primary" data-act="checkout">${esc(L.checkout)}</button>` : ''}
+  <button type="button" class="kp-btn${typeof opts.onCheckout === 'function' ? '' : ' kp-primary'}" data-act="pdf"${pdfBusy ? ' disabled' : ''}>${esc(pdfBusy ? L.pdfBusy : L.pdf)}</button>
   <button type="button" class="kp-btn" data-act="csv">${esc(L.exportCsv)}</button>
   ${importBtn}
-</div>`;
+</div></div>`;
+      els.sum.querySelector('.kp-sum-body').scrollTop = scrollTop;
     }
 
     function renderAll() {
@@ -2407,6 +2752,7 @@ ${el.images[0] ? `<img class="kp-photo" src="${esc(el.images[0])}" alt="" loadin
         case 'redo': redo(); break;
         case 'clear': clearAll(); break;
         case 'csv': exportCsv(); break;
+        case 'pdf': exportPdf(); break;
         case 'import': els.file.click(); break;
         case 'checkout': opts.onCheckout(buildOrder()); break;
         case 'switch-series': switchSeries(state.ui.series); break;
@@ -2676,6 +3022,23 @@ ${el.images[0] ? `<img class="kp-photo" src="${esc(el.images[0])}" alt="" loadin
       }).catch(() => { /* message is shown in the 3D panel */ });
     }
 
+    function themeColors() {
+      const cs = getComputedStyle(host);
+      const v = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
+      return {
+        bg: v('--kp-surface', '#f7f6f3'),
+        wall: v('--kp-wall', '#f2f0ea'),
+        floor: v('--kp-floor', '#d5cfc3'),
+        worktop: v('--kp-worktop', '#cdbfa9'),
+        accent: v('--kp-accent', '#2f6f62'),
+        ok: v('--kp-ok', '#2f8f5b'),
+      };
+    }
+
+    function sceneContext(wrap) {
+      return { wrap, label: L.canvas3d, state: () => state, get, wallTop, cornerSide: cornerSideOf, armOf, colors: themeColors };
+    }
+
     function ensure3d() {
       if (scene3d) return Promise.resolve(scene3d);
       if (!loading3d) {
@@ -2683,27 +3046,7 @@ ${el.images[0] ? `<img class="kp-photo" src="${esc(el.images[0])}" alt="" loadin
         els.msg3d.hidden = false;
         loading3d = loadThree(opts).then(THREE => {
           if (destroyed) throw new Error('destroyed');
-          scene3d = createScene3D(THREE, {
-            wrap: els.v3d,
-            label: L.canvas3d,
-            state: () => state,
-            get,
-            wallTop,
-            cornerSide: cornerSideOf,
-            armOf,
-            colors() {
-              const cs = getComputedStyle(host);
-              const v = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
-              return {
-                bg: v('--kp-surface', '#f7f6f3'),
-                wall: v('--kp-wall', '#f2f0ea'),
-                floor: v('--kp-floor', '#d5cfc3'),
-                worktop: v('--kp-worktop', '#cdbfa9'),
-                accent: v('--kp-accent', '#2f6f62'),
-                ok: v('--kp-ok', '#2f8f5b'),
-              };
-            },
-          });
+          scene3d = createScene3D(THREE, sceneContext(els.v3d));
           els.msg3d.hidden = true;
           const c = scene3d.canvas;
           c.addEventListener('pointerdown', on3dDown);
@@ -2801,6 +3144,7 @@ ${el.images[0] ? `<img class="kp-photo" src="${esc(el.images[0])}" alt="" loadin
       addElement: id => addElement(id),
       setView: v => setView(v),
       exportCsv: () => exportCsv(),
+      exportPdf: () => exportPdf(),
       getSpecification: () => buildCsv(),
       importSpecification: input => (input && typeof input.text === 'function' ? importFile(input) : Promise.resolve(importText(input))),
       setSeries(s) {

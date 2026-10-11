@@ -1,8 +1,8 @@
 # KitchenPlanner
 
-Drag & drop planer kuhinja iz elemenata za web prodavnice. Kupac bira liniju (Aria, Una, Tisa…), prevlači elemente na zidove (I, L ili U raspored), gleda kuhinju u 2D i 3D i šalje upit ili specifikaciju.
+Drag & drop planer kuhinja iz elemenata za web prodavnice. Kupac bira liniju (Aria, Una, Tisa…), prevlači elemente na zidove (I, L ili U raspored), gleda kuhinju u 2D i 3D i preuzima PDF sa 3D slikom, crtežima zidova i spiskom elemenata.
 
-- Jedan fajl, bez zavisnosti: `src/kitchen-planner.js`. Za 3D se three.js učitava tek kad kupac otvori 3D prikaz.
+- Jedan fajl, bez zavisnosti: `src/kitchen-planner.js`. Za 3D se three.js, a za PDF jsPDF i font Roboto učitavaju tek kad zatrebaju.
 - Radi u Shadow DOM-u, pa CSS prodavnice ne može pokvariti planer (a ni planer prodavnicu).
 - Radi na desktopu, tabletu i mobitelu (mišem, prstom i tastaturom).
 
@@ -24,10 +24,9 @@ Skripta je javno dostupna preko jsDelivr CDN-a (direktno iz ovog repoa):
     container: '#planer',
     elementsUrl: '/api/elementi',              // ili elements: [...]
     prices: { '10019723': 176, '10019733': 266 }, // ili getPrice: el => ...
-    onCheckout(order) {
-      // order.lines = [{ id, sku, name, qty, unitPrice, total }], order.total, order.design
-      fetch('/api/upit', { method: 'POST', body: JSON.stringify(order) });
-    },
+    pdf: { company: 'Naziv prodavnice', footer: 'Tel. 033 000 000 · www.prodavnica.ba' },
+    // Opcionalno dugme "Pošalji upit":
+    // onCheckout(order) { fetch('/api/upit', { method: 'POST', body: JSON.stringify(order) }); },
   });
 </script>
 ```
@@ -52,12 +51,16 @@ Demo se objavljuje iz grane `gh-pages`. Nakon izmjena: `git push origin main:gh-
 | `theme` | Boje, npr. `{ accent: '#a33', bg: '#fff', wall: '#eee' }` (postaje `--kp-accent`…). |
 | `labels` | Prevod ili izmjena bilo kojeg teksta u sučelju. |
 | `storageKey`, `autosave` | Kuhinja se sama čuva u pregledniku kupca. |
+| `pdf` | Tekst na PDF-u: `{ title, company, footer }` (naslov, naziv prodavnice gore, kontakt dolje). |
 | `three` / `threeUrl` | Ako sajt već ima three.js, ili ga hostuje sam (zadano: jsDelivr, three@0.160.0). |
-| `onCheckout`, `onChange`, `onReady` | Callback funkcije. Dugme "Pošalji upit" se pojavi samo ako postoji `onCheckout`. |
+| `jspdf` / `jspdfUrl`, `pdfFonts` | Isto za jsPDF (zadano jspdf@2.5.2) i TTF fontove `{ normal, bold }` (zadano Roboto). |
+| `onCheckout`, `onChange`, `onReady` | Callback funkcije. `onCheckout(order)` dodaje dugme "Pošalji upit"; `order.lines` = `[{ id, sku, name, qty, unitPrice, total }]`, plus `order.total` i `order.design`. |
 
-API instance: `getOrder()`, `getDesign()`, `loadDesign(d)`, `addElement(id)`, `setSeries(s)`, `setView('2d'|'3d')`, `exportCsv()`, `getSpecification()`, `importSpecification(fajl ili tekst)`, `undo()`, `redo()`, `clear()`, `destroy()`, `ready` (Promise).
+API instance: `getOrder()`, `getDesign()`, `loadDesign(d)`, `addElement(id)`, `setSeries(s)`, `setView('2d'|'3d')`, `exportPdf()`, `exportCsv()`, `getSpecification()`, `importSpecification(fajl ili tekst)`, `undo()`, `redo()`, `clear()`, `destroy()`, `ready` (Promise).
 
-## Specifikacija (CSV) i ponovno učitavanje
+## PDF, specifikacija (CSV) i ponovno učitavanje
+
+"Preuzmi PDF" pravi `kuhinja-GGGG-MM-DD.pdf`. Na prvoj strani su naslov, 3D slika, spisak elemenata (količina, šifra, naziv, dimenzije, cijena) i ukupno, na drugoj crteži svih zidova sa mjerama. Tekst je pravi tekst (šifre se mogu kopirati), a projekat je sakriven u svojstvima PDF-a, pa se i PDF može ponovo učitati.
 
 "Preuzmi specifikaciju" pravi `kuhinja-GGGG-MM-DD.csv` koji se otvara u Excelu: stavke sa cijenama, radna ploča i cokla, zatim zidovi i raspored (zid, pozicija od lijevog ruba, šifra, naziv, dimenzije). Zadnji red (`kitchen-planner`) nosi cijeli projekat.
 
@@ -66,7 +69,8 @@ API instance: `getOrder()`, `getDesign()`, `loadDesign(d)`, `addElement(id)`, `s
 ## Kako radi raspored
 
 - Svaki zid ima donji red (donji elementi, 82 cm), gornji red (gornji elementi, gornja ivica na 212 cm) i visoke elemente koji zauzimaju oba reda. Elementi se lijepe za susjede i ne mogu se preklopiti.
-- Zidovi su lanac: desni kraj zida A je ugao s lijevim krajem zida B (L), a desni kraj zida B je ugao sa zidom C (U). Element u uglu zauzima i početak susjednog zida u svojoj dubini. To se provjerava u tlocrtu, a na susjednom zidu se iscrtava šrafurom "UGAO".
+- Zidovi su lanac: desni kraj zida A je ugao s lijevim krajem zida B (L), a desni kraj zida B je ugao sa zidom C (U). Element u uglu zauzima i početak susjednog zida u svojoj dubini. To se provjerava u tlocrtu, a na susjednom zidu se vidi kako taj element izgleda iz tog pogleda.
+- Ugaoni elementi su nacrtani kao na fotografijama: donji 90×90 kao L sa vratima na oba kraka, Una/Tisa D UG kao slijepi ugao, gornji 60×60 kao kosi (petougaoni) ugao. Spušten blizu ugla, ugaoni element ide u ugao i odmakne elemente drugog zida koji mu smetaju.
 - Sažetak računa potrebnu dužinu radne ploče i cokle; za Una/Tisa predlaže komade cokle (4 m, 2 m, 0,6 m) uz najmanje otpada.
 - "Prebaci cijelu kuhinju na liniju X" mijenja svaki element odgovarajućim (isti tip i širina) iz druge linije.
 
