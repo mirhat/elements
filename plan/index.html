@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="bs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Planer tlocrta – demo</title>
+  <meta name="description" content="Nacrtaj tlocrt stana ili kuće u pregledniku: zidovi, prostorije sa površinom, vrata, prozori, namještaj, 3D prikaz i PDF.">
+  <link rel="icon" href="../brand/plan-mark.svg" type="image/svg+xml">
+  <link rel="icon" href="../brand/plan-favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="../brand/plan-apple-touch-icon.png">
+  <meta name="theme-color" content="#2f6f62">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Planer tlocrta">
+  <meta property="og:title" content="Planer tlocrta – demo">
+  <meta property="og:description" content="Nacrtaj tlocrt stana ili kuće: zidovi, prostorije sa površinom, vrata, prozori i namještaj, u 2D i 3D.">
+  <meta property="og:image" content="https://mirhat.github.io/elements/brand/plan-og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:url" content="https://mirhat.github.io/elements/plan/">
+  <meta name="twitter:card" content="summary_large_image">
+  <style>
+    body { margin: 0; background: #f4f2ee; color: #23262a; font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .top { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: #fff; border-bottom: 1px solid #e3e0d9; }
+    .brand { display: flex; align-items: center; gap: 10px; color: #1d2125; text-decoration: none; font-size: 21px; letter-spacing: -.2px; }
+    .brand b { font-weight: 800; }
+    .brand em { font-style: normal; color: #2f6f62; }
+    .badge { padding: 3px 9px; border-radius: 999px; background: #e3efeb; color: #2f6f62; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .other { margin-left: auto; color: #2f6f62; font-weight: 600; text-decoration: none; font-size: 14px; }
+    .other:hover { text-decoration: underline; }
+    main { max-width: 1440px; margin: 0 auto; padding: 24px 16px 56px; }
+    h1 { margin: 0 0 6px; font-size: 28px; line-height: 1.2; }
+    .lead { margin: 0 0 10px; max-width: 75ch; font-size: 16px; }
+    .tips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; padding: 0; list-style: none; }
+    .tips li { padding: 6px 12px; background: #fff; border: 1px solid #e3e0d9; border-radius: 999px; font-size: 14px; }
+    .note { margin: 0 0 18px; color: #6a6f76; font-size: 13.5px; }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="index.html"><img src="../brand/plan-mark.svg" width="36" height="36" alt=""><span><b>Planer</b> <em>tlocrta</em></span></a>
+    <span class="badge">demo</span>
+    <a class="other" href="../demo/index.html">Planer kuhinje →</a>
+  </header>
+  <main>
+    <h1>Nacrtaj tlocrt stana ili kuće</h1>
+    <p class="lead">Zidovi, prostorije sa površinom, vrata, prozori i namještaj, direktno u pregledniku. Plan se pogleda u 3D i preuzme kao PDF ili slika.</p>
+    <ul class="tips">
+      <li>1. Zid: klikni za svaki ugao, upiši broj za tačnu dužinu</li>
+      <li>2. Prostorija: povuci pravougaonik</li>
+      <li>3. Vrata i prozor: klikni na zid</li>
+      <li>4. Pogledaj u 3D i preuzmi PDF</li>
+    </ul>
+    <p class="note">Ovdje je primjer stana. Dugme "Očisti" daje prazan plan, a Ctrl+Z vraća korak nazad.</p>
+
+    <div id="tlocrt"></div>
+  </main>
+
+  <script src="../src/floor-planner.js"></script>
+  <script>
+    // Primjer koji vidi svako ko prvi put otvori demo
+    const PRIMJER = FloorPlanner.sketch({
+      title: 'Primjer: stan sa tri sobe',
+      thickness: 12,
+      walls: [
+        [0, 0, 1000, 0, 25], [1000, 0, 1000, 900, 25], [1000, 900, 0, 900, 25], [0, 900, 0, 0, 25],
+        [0, 480, 1000, 480], [0, 600, 1000, 600], [600, 0, 600, 480], [280, 600, 280, 900],
+      ],
+      openings: [
+        [0, 540, 'door', 100],
+        [300, 480, 'door', 90, { flip: true }],
+        [660, 480, 'door', 90, { flip: true }],
+        [140, 600, 'door', 80],
+        [640, 600, 'door', 90],
+        [200, 0, 'window', 160],
+        [800, 0, 'window', 140],
+        [1000, 240, 'balcony', 90],
+        [640, 900, 'window', 160],
+        [1000, 700, 'window', 120],
+        [140, 900, 'window', 60],
+      ],
+      rooms: [[290, 130, 'Dnevni boravak'], [800, 240, 'Spavaća soba'], [500, 540, 'Hodnik'], [140, 750, 'Kupatilo'], [640, 750, 'Dječija soba']],
+      items: [
+        ['kitchen', 484, 42.5, 0, 220, 60], ['dining', 450, 250], ['sofa', 250, 300, 90], ['coffee', 135, 300, 90], ['tv', 32.5, 300, 270],
+        ['bed-double', 800, 117.5], ['wardrobe', 870, 444, 180],
+        ['bathtub', 97.5, 850, 180], ['wc', 241.5, 700, 90], ['basin', 35, 680, 270], ['washer', 232, 640],
+        ['bed-single', 887.5, 842.5, 90], ['desk', 420, 857.5, 180], ['wardrobe', 316, 720, 270, 150, 60],
+        ['plant', 960, 540],
+      ],
+    });
+
+    window.planer = FloorPlanner.create({
+      container: '#tlocrt',
+      storageKey: 'demo',
+      defaultDesign: PRIMJER,
+      pdf: { company: 'Planer tlocrta', logo: '../brand/plan-mark.svg', footer: 'Demo planera tlocrta' },
+    });
+  </script>
+</body>
+</html>
