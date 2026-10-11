@@ -97,7 +97,9 @@ Druga aplikacija u ovom repou: crtanje tlocrta stanova i kuća u pregledniku. De
 - **Vrata i prozori:** klik na zid. Vrsta vrata: obična, dvokrilna, klizna, balkonska ili prolaz. Strana otvaranja i šarke se mijenjaju, a otvor se pomjera duž zida.
 - **Namještaj i sanitarije:** 19 komada (kreveti, sofa, sto, ormar, kuhinja, kada, tuš, WC, umivaonik, veš mašina, stepenice…). Prevlače se, rotiraju (R) i mijenja im se veličina.
 - **Uređivanje:** pomjeranje uglova i cijelih zidova, mjere na zidovima, tekst, poništi/ponovi, automatsko čuvanje, zum i pomjeranje mišem ili prstima.
-- **3D prikaz** (zidovi sa otvorima, podovi, namještaj), **PDF** sa planom i spiskom prostorija, **PNG** i **JSON**. PDF i JSON se mogu ponovo učitati.
+- **3D prikaz:** zidovi sa prozorima (okvir, pregrada, staklo, daska) i vratima (štok, krilo, kvaka), parket u sobama i pločice u kupatilu, kuhinji i hodniku, te namještaj kao pravi modeli (sofa sa jastucima, krevet sa posteljinom, sto sa stolicama, kuhinja sa sudoperom i pločom, kada, tuš, WC, umivaonik sa ogledalom…).
+- **Šetnja u prvom licu:** dugme "Šetnja" u 3D. Hoda se sa W A S D ili strelicama (Shift brže), a gleda povlačenjem mišem. Na telefonu je džojstik lijevo i povlačenje prstom za pogled. Kroz zidove i namještaj se ne može, kroz vrata može. Mala mapa pokazuje gdje si, a klik na nju te prebaci. Esc izlazi.
+- **PDF** sa planom i spiskom prostorija, **PNG** i **JSON**. PDF i JSON se mogu ponovo učitati.
 
 ```html
 <div id="tlocrt"></div>
@@ -122,7 +124,7 @@ Za stalni link umjesto `@main` koristi tag verzije (npr. `@v0.1.2`) kad bude nap
 | `three`/`threeUrl`, `jspdf`/`jspdfUrl`, `pdfFonts` | Isto kao kod planera kuhinje. |
 | `onChange` | `(plan) => {}` nakon svake promjene. |
 
-API: `getDesign()`, `loadDesign(plan)`, `areas()` (prostorije sa m²), `setTool('select'|'wall'|'room'|'door'|'window'|'furniture'|'text')`, `setView('2d'|'3d')`, `fit()`, `undo()`, `redo()`, `clear()`, `exportPdf()`, `exportPng()`, `exportJson()`, `importText(tekst)`, `destroy()`.
+API: `getDesign()`, `loadDesign(plan)`, `areas()` (prostorije sa m²), `setTool('select'|'wall'|'room'|'door'|'window'|'furniture'|'text')`, `setView('2d'|'3d')`, `walk()` (šetnja), `walkTo(x, y, smjer)` (šetnja od tačke plana u cm, smjer u stepenima), `fit()`, `undo()`, `redo()`, `clear()`, `exportPdf()`, `exportPng()`, `exportJson()`, `importText(tekst)`, `destroy()`.
 
 Prečice: S odaberi, Z zid, P prostorija, V vrata, O prozor, N namještaj, T tekst, R rotacija, Delete briše, Esc završava ili poništava, Ctrl+Z / Ctrl+Shift+Z, razmak + prevlačenje za pomjeranje plana.
 

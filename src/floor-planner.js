@@ -903,6 +903,8 @@
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
     const canvas = renderer.domElement;
     canvas.className = 'fp-3d-canvas';
     canvas.tabIndex = 0;
@@ -913,15 +915,21 @@
     const scene = new THREE.Scene();
     scene.background = new THREE.Color('#f4f2ee');
     const camera = new THREE.PerspectiveCamera(40, 1, 5, 20000);
-    const sun = new THREE.DirectionalLight(0xffffff, 1.35);
+    const sun = new THREE.DirectionalLight(0xfff4e6, 2.1);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     sun.shadow.bias = -0.0004;
     sun.shadow.normalBias = 0.8;
-    scene.add(new THREE.HemisphereLight(0xffffff, 0xd6cfc2, 1.15), sun, sun.target);
+    const hemi = new THREE.HemisphereLight(0xf3f6ff, 0xd9cfbf, 1.45);
+    // While walking a soft light travels with the camera, like lights switched on in the flat.
+    const fill = new THREE.PointLight(0xfff6e8, 0, 0, 0);
+    scene.add(hemi, sun, sun.target, fill);
     const world = new THREE.Group();
     scene.add(world);
     const orbit = { theta: 0.55, phi: 0.9, radius: 1500, target: new THREE.Vector3() };
+    // First-person walk: position on the plan, view direction, keys held, joystick vector.
+    const walk = { on: false, pos: null, yaw: 0, pitch: 0, eye: 160, keys: new Set(), joy: { x: 0, y: 0 }, segs: [], boxes: [], raf: 0, last: 0, mini: null, joyEl: null };
+    let ceilings = [];
     const mats = new Map();
     const mat = (color, extra) => {
       const k = color + JSON.stringify(extra || {});
@@ -963,15 +971,351 @@
       return m;
     };
 
+    // Rounded box with its base on y = 0, centred in x and z.
+    function rbox(w, h, dp, r) {
+      r = Math.max(0.2, Math.min(r, w / 2 - 0.3, dp / 2 - 0.3, h / 2 - 0.1));
+      const iw = Math.max(0.2, w - 2 * r);
+      const id = Math.max(0.2, dp - 2 * r);
+      const rc = Math.min(r, iw / 2, id / 2) * 0.6;
+      const x0 = -iw / 2;
+      const y0 = -id / 2;
+      const sh = new THREE.Shape();
+      sh.moveTo(x0 + rc, y0);
+      sh.lineTo(x0 + iw - rc, y0);
+      sh.quadraticCurveTo(x0 + iw, y0, x0 + iw, y0 + rc);
+      sh.lineTo(x0 + iw, y0 + id - rc);
+      sh.quadraticCurveTo(x0 + iw, y0 + id, x0 + iw - rc, y0 + id);
+      sh.lineTo(x0 + rc, y0 + id);
+      sh.quadraticCurveTo(x0, y0 + id, x0, y0 + id - rc);
+      sh.lineTo(x0, y0 + rc);
+      sh.quadraticCurveTo(x0, y0, x0 + rc, y0);
+      const g = new THREE.ExtrudeGeometry(sh, { depth: Math.max(0.1, h - 2 * r), bevelEnabled: true, bevelThickness: r, bevelSize: r, bevelSegments: 3, curveSegments: 4 });
+      g.rotateX(-Math.PI / 2);
+      g.translate(0, r, 0);
+      return g;
+    }
+    const B = (w, h, dp) => new THREE.BoxGeometry(w, h, dp).translate(0, h / 2, 0);
+    const C = (rt, rb, h, seg) => new THREE.CylinderGeometry(rt, rb, h, seg || 18).translate(0, h / 2, 0);
+    const put = (parent, geo, material, x, y, z) => {
+      const m = new THREE.Mesh(geo, material);
+      m.position.set(x, y, z);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      parent.add(m);
+      return m;
+    };
+
+    // Floor textures drawn on a canvas: plank parquet and tiles (UVs are plan centimetres).
+    const textures = new Map();
+    function floorTexture(kind) {
+      if (textures.has(kind)) return textures.get(kind);
+      const c = document.createElement('canvas');
+      c.width = c.height = 512;
+      const g = c.getContext('2d');
+      let seed = 7;
+      const rnd = () => {
+        seed = (seed * 16807) % 2147483647;
+        return seed / 2147483647;
+      };
+      let span = 160;
+      if (kind === 'wood') {
+        for (let row = 0; row < 8; row++) {
+          let x = -rnd() * 300;
+          while (x < 512) {
+            const L = 200 + rnd() * 220;
+            const k = 0.86 + rnd() * 0.2;
+            const col = `rgb(${Math.round(196 * k)},${Math.round(154 * k)},${Math.round(108 * k)})`;
+            [x, x - 512].forEach(px => {
+              g.fillStyle = col;
+              g.fillRect(px, row * 64, L, 64);
+              for (let i = 0; i < 6; i++) {
+                g.fillStyle = `rgba(90,58,30,${0.05 + rnd() * 0.06})`;
+                g.fillRect(px, row * 64 + rnd() * 64, L, 1 + rnd() * 1.5);
+              }
+              g.fillStyle = 'rgba(60,38,20,.45)';
+              g.fillRect(px, row * 64, 1.5, 64);
+            });
+            x += L;
+          }
+          g.fillStyle = 'rgba(60,38,20,.4)';
+          g.fillRect(0, row * 64, 512, 1.5);
+        }
+      } else {
+        span = 120;
+        const base = kind === 'tiles-blue' ? [222, 230, 233] : [228, 224, 216];
+        for (let i = 0; i < 2; i++) {
+          for (let j = 0; j < 2; j++) {
+            const k = 0.97 + rnd() * 0.05;
+            g.fillStyle = `rgb(${base.map(v => Math.round(v * k)).join(',')})`;
+            g.fillRect(i * 256, j * 256, 256, 256);
+          }
+        }
+        g.fillStyle = 'rgba(120,115,105,.45)';
+        [0, 256].forEach(v => {
+          g.fillRect(v, 0, 3, 512);
+          g.fillRect(0, v, 512, 3);
+        });
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(1 / span, 1 / span);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+      textures.set(kind, tex);
+      return tex;
+    }
+
+    // Walls get a little darker towards the floor and the ceiling, which reads like the soft
+    // shadow in real room corners. Side UVs of the wall prisms run with the height.
+    function wallMaterial(H) {
+      const key = 'wall-' + H;
+      if (mats.has(key)) return mats.get(key);
+      const c = document.createElement('canvas');
+      c.width = 4;
+      c.height = 256;
+      const g = c.getContext('2d');
+      const grad = g.createLinearGradient(0, 256, 0, 0);
+      grad.addColorStop(0, '#c9c5bd');
+      grad.addColorStop(0.07, '#f0eee9');
+      grad.addColorStop(0.2, '#ffffff');
+      grad.addColorStop(0.86, '#ffffff');
+      grad.addColorStop(1, '#dedad3');
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 4, 256);
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.repeat.set(0.01, -1 / H);
+      tex.offset.set(0, 1 / H);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      textures.set(key, tex);
+      const m = new THREE.MeshStandardMaterial({ color: '#f5f3ee', map: tex, roughness: 0.95 });
+      mats.set(key, m);
+      return m;
+    }
+
+    function floorMaterial(room) {
+      const n = String(room.name || '').toLowerCase();
+      const kind = /kupat|wc|tuš|tus/.test(n) ? 'tiles-blue' : /kuhinj|hodnik|ulaz|balkon|teras|ostav|garaž|trpez/.test(n) ? 'tiles' : 'wood';
+      const key = 'floor-' + kind;
+      if (!mats.has(key)) mats.set(key, new THREE.MeshStandardMaterial({ map: floorTexture(kind), roughness: kind === 'wood' ? 0.55 : 0.32 }));
+      return mats.get(key);
+    }
+
+    function palette() {
+      return {
+        fabric: mat('#7f908c', { roughness: 0.95 }),
+        cushion: mat('#9aaaa6', { roughness: 0.95 }),
+        linen: mat('#f4f1ea', { roughness: 0.9 }),
+        duvet: mat('#a3b6c6', { roughness: 0.95 }),
+        wood: mat('#c49a6c', { roughness: 0.55 }),
+        woodDark: mat('#6e5038', { roughness: 0.6 }),
+        white: mat('#efefec', { roughness: 0.5 }),
+        gloss: mat('#f7f8f9', { roughness: 0.22 }),
+        metal: mat('#b9bec3', { roughness: 0.28, metalness: 0.85 }),
+        steel: mat('#9ea5ab', { roughness: 0.25, metalness: 0.75 }),
+        dark: mat('#2b2e32', { roughness: 0.5 }),
+        black: mat('#111214', { roughness: 0.12 }),
+        ceramic: mat('#fbfcfd', { roughness: 0.12 }),
+        water: mat('#d3e3eb', { roughness: 0.08 }),
+        glass: mat('#cfe3ec', { transparent: true, opacity: 0.32, roughness: 0.05 }),
+        counter: mat('#d9d2c5', { roughness: 0.35 }),
+        mirror: mat('#cfdbe0', { roughness: 0.08, metalness: 0.15 }),
+        leaf: mat('#5c9a55', { roughness: 0.8 }),
+        leaf2: mat('#76b06a', { roughness: 0.8 }),
+        pot: mat('#c27a55', { roughness: 0.85 }),
+        soil: mat('#4a3a2c', { roughness: 1 }),
+      };
+    }
+
+    function chair(parent, M, x, z, side) {
+      const c = new THREE.Group();
+      c.position.set(x, 0, z);
+      put(c, rbox(42, 5, 42, 2), M.wood, 0, 44, 0);
+      [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([a, b]) => put(c, B(3, 44, 3), M.woodDark, a * 18, 0, b * 18));
+      put(c, rbox(42, 40, 4, 2), M.wood, 0, 49, side * 19);
+      parent.add(c);
+    }
+
+    // Furniture built from simple parts. Local axes: x across the width, z from the back
+    // (-d/2, the top edge of the 2D symbol) to the front, y up.
+    function furniture(it, M, H) {
+      const g = new THREE.Group();
+      const w = it.w;
+      const dp = it.d;
+      const legs = (h, inset, r, material) => [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([a, b]) => put(g, C(r, r, h, 10), material, a * (w / 2 - inset), 0, b * (dp / 2 - inset)));
+      const doors = (n, x0, width, y, h, z, material, handleY) => {
+        const pw = width / n;
+        for (let i = 0; i < n; i++) {
+          const x = x0 + pw * (i + 0.5);
+          put(g, B(pw - 0.6, h, 1.6), material, x, y, z);
+          const hx = x + (i % 2 ? -1 : 1) * (pw / 2 - 5);
+          put(g, B(1.4, Math.min(24, h * 0.3), 2), M.metal, n === 1 ? x + pw / 2 - 5 : hx, handleY, z + 1.6);
+        }
+      };
+      switch (it.type) {
+        case 'sofa':
+        case 'armchair': {
+          const arm = Math.min(18, w * 0.18);
+          legs(8, 7, 2, M.dark);
+          put(g, rbox(w, 22, dp, 4), M.fabric, 0, 8, 0);
+          put(g, rbox(arm, 34, dp, 6), M.fabric, -w / 2 + arm / 2, 30, 0);
+          put(g, rbox(arm, 34, dp, 6), M.fabric, w / 2 - arm / 2, 30, 0);
+          put(g, rbox(w - 2 * arm, 50, 20, 8), M.fabric, 0, 30, -dp / 2 + 10);
+          const n = it.type === 'sofa' ? (w > 170 ? 3 : 2) : 1;
+          const cw = (w - 2 * arm) / n;
+          for (let i = 0; i < n; i++) {
+            const x = -w / 2 + arm + cw * (i + 0.5);
+            put(g, rbox(cw - 2, 14, dp - 26, 6), M.cushion, x, 30, 8);
+            put(g, rbox(cw - 4, 38, 16, 8), M.cushion, x, 42, -dp / 2 + 27);
+          }
+          break;
+        }
+        case 'bed-double':
+        case 'bed-single': {
+          legs(10, 6, 2.5, M.woodDark);
+          put(g, rbox(w, 22, dp, 3), M.wood, 0, 10, 0);
+          put(g, rbox(w, 72, 7, 3), M.wood, 0, 10, -dp / 2 + 3.5);
+          put(g, rbox(w - 6, 18, dp - 12, 6), M.linen, 0, 30, 3);
+          const dl = dp * 0.66;
+          put(g, rbox(w + 1, 7, dl, 4), M.duvet, 0, 43, dp / 2 - dl / 2 - 1);
+          const xs = it.type === 'bed-double' ? [-w / 4, w / 4] : [0];
+          const pw = it.type === 'bed-double' ? w / 2 - 14 : w - 30;
+          xs.forEach(x => put(g, rbox(pw, 13, 34, 6), M.linen, x, 46, -dp / 2 + 30));
+          break;
+        }
+        case 'coffee':
+          put(g, rbox(w, 4, dp, 2), M.wood, 0, 38, 0);
+          put(g, B(w - 12, 2, dp - 12), M.wood, 0, 12, 0);
+          legs(38, 5, 1.8, M.dark);
+          break;
+        case 'table':
+          put(g, rbox(w, 4, dp, 1.5), M.wood, 0, 71, 0);
+          legs(71, 6, 2.5, M.woodDark);
+          break;
+        case 'dining': {
+          const tw = w * 0.8;
+          const td = dp * 0.6;
+          put(g, rbox(tw, 4, td, 1.5), M.wood, 0, 71, 0);
+          [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([a, b]) => put(g, C(2.5, 2.5, 71, 10), M.woodDark, a * (tw / 2 - 7), 0, b * (td / 2 - 7)));
+          [-1, 1].forEach(side => [-0.25, 0.25].forEach(f => chair(g, M, f * tw, side * (td / 2 + 14), side)));
+          break;
+        }
+        case 'desk':
+          put(g, rbox(w, 3, dp, 1), M.wood, 0, 72, 0);
+          put(g, B(40, 60, dp - 4), M.white, w / 2 - 21, 12, 0);
+          put(g, B(4, 72, dp - 6), M.white, -w / 2 + 3, 0, 0);
+          put(g, C(3, 3, 9), M.metal, 0, 75, -dp / 2 + 14);
+          put(g, B(56, 33, 2), M.black, 0, 84, -dp / 2 + 14);
+          break;
+        case 'wardrobe':
+          put(g, B(w, 210, dp - 2), M.white, 0, 0, -1);
+          doors(Math.max(1, Math.round(w / 55)), -w / 2, w, 4, 202, dp / 2 - 1, M.gloss, 100);
+          break;
+        case 'tv': {
+          legs(8, 6, 1.5, M.dark);
+          put(g, rbox(w, 38, dp, 2), M.wood, 0, 8, 0);
+          const sw = w * 0.72;
+          put(g, B(18, 4, 12), M.dark, 0, 46, -dp / 2 + 10);
+          put(g, C(1.5, 1.5, 8), M.dark, 0, 50, -dp / 2 + 10);
+          put(g, B(sw, sw * 0.56, 3), M.black, 0, 56, -dp / 2 + 10);
+          break;
+        }
+        case 'kitchen': {
+          put(g, B(w - 2, 10, dp - 8), M.dark, 0, 0, -3);
+          put(g, B(w, 76, dp - 2), M.white, 0, 10, -1);
+          const n = Math.max(1, Math.round(w / 60));
+          doors(n, -w / 2, w, 12, 72, dp / 2 - 1.2, M.gloss, 70);
+          put(g, B(w, 4, dp + 2), M.counter, 0, 86, 1);
+          if (w >= 100) {
+            put(g, B(50, 0.8, 40), M.steel, -w * 0.22, 90, 2);
+            put(g, C(1.5, 1.5, 26), M.metal, -w * 0.22, 90, -dp / 2 + 9);
+            put(g, B(2.2, 2.2, 16), M.metal, -w * 0.22, 114, -dp / 2 + 16);
+          }
+          if (w >= 160) {
+            put(g, B(58, 0.8, 50), M.black, w * 0.25, 90, 2);
+            [[-14, -12], [14, -12], [-14, 12], [14, 12]].forEach(([a, b]) => put(g, C(8, 8, 0.3, 24), M.dark, w * 0.25 + a, 90.8, 2 + b));
+          }
+          put(g, B(w, 70, 34), M.white, 0, 145, -dp / 2 + 17);
+          doors(n, -w / 2, w, 146, 68, -dp / 2 + 34.8, M.gloss, 152);
+          break;
+        }
+        case 'fridge':
+          put(g, rbox(w, 185, dp, 2), M.gloss, 0, 0, 0);
+          put(g, B(w - 2, 0.6, 0.6), M.dark, 0, 125, dp / 2);
+          put(g, B(2, 30, 3), M.metal, w / 2 - 6, 135, dp / 2 + 1.5);
+          put(g, B(2, 30, 3), M.metal, w / 2 - 6, 88, dp / 2 + 1.5);
+          break;
+        case 'bathtub':
+          put(g, rbox(w, 55, dp, 8), M.ceramic, 0, 0, 0);
+          put(g, rbox(w - 16, 1, dp - 16, 12), M.water, 0, 54.6, 0);
+          put(g, C(1.6, 1.6, 14), M.metal, w / 2 - 12, 55, 0);
+          put(g, B(10, 2, 2.4), M.metal, w / 2 - 16, 67, 0);
+          break;
+        case 'shower':
+          put(g, rbox(w, 6, dp, 2), M.ceramic, 0, 0, 0);
+          put(g, B(w, 195, 0.8), M.glass, 0, 6, dp / 2 - 0.4);
+          put(g, B(0.8, 195, dp), M.glass, w / 2 - 0.4, 6, 0);
+          put(g, C(1.2, 1.2, 190), M.metal, -w / 2 + 6, 6, -dp / 2 + 6);
+          put(g, C(9, 9, 1.5, 24), M.metal, -w / 2 + 16, 194, -dp / 2 + 16);
+          break;
+        case 'wc': {
+          put(g, C(17, 12, 38, 28), M.ceramic, 0, 0, dp * 0.1).scale.z = 1.3;
+          put(g, C(18, 18, 2.5, 28), M.white, 0, 38, dp * 0.1).scale.z = 1.3;
+          put(g, rbox(w * 0.88, 34, 17, 3), M.ceramic, 0, 40, -dp / 2 + 8.5);
+          break;
+        }
+        case 'basin':
+          put(g, rbox(w, 45, dp - 4, 2), M.wood, 0, 35, -2);
+          put(g, rbox(w, 10, dp, 4), M.ceramic, 0, 80, 0);
+          put(g, C(w * 0.32, w * 0.32, 0.6, 28), M.water, 0, 90, 2).scale.z = (dp / w) * 1.1;
+          put(g, C(1.4, 1.4, 14), M.metal, 0, 90, -dp / 2 + 7);
+          put(g, B(2, 2, 10), M.metal, 0, 102, -dp / 2 + 12);
+          put(g, B(w * 0.9, 70, 1.2), M.mirror, 0, 118, -dp / 2 + 0.6);
+          break;
+        case 'washer': {
+          put(g, rbox(w, 85, dp, 3), M.gloss, 0, 0, 0);
+          const ring = new THREE.CylinderGeometry(w * 0.31, w * 0.31, 2, 32).rotateX(Math.PI / 2);
+          const disc = new THREE.CylinderGeometry(w * 0.23, w * 0.23, 2.4, 32).rotateX(Math.PI / 2);
+          put(g, ring, M.dark, 0, 42, dp / 2 + 0.5);
+          put(g, disc, M.glass, 0, 42, dp / 2 + 0.9);
+          put(g, B(w - 6, 8, 1), M.white, 0, 74, dp / 2);
+          break;
+        }
+        case 'stairs': {
+          const n = Math.max(3, Math.round(H / 18));
+          const rise = H / n;
+          const run = dp / n;
+          for (let i = 0; i < n; i++) put(g, B(w, rise * (i + 1), run), M.wood, 0, 0, dp / 2 - run * (i + 0.5));
+          break;
+        }
+        case 'plant': {
+          const r = Math.min(w, dp) * 0.32;
+          put(g, C(r, r * 0.78, 34, 20), M.pot, 0, 0, 0);
+          put(g, C(r * 0.95, r * 0.95, 1, 20), M.soil, 0, 33, 0);
+          for (let i = 0; i < 7; i++) {
+            const a = i * 2.4;
+            const rr = i ? r * 0.55 : 0;
+            put(g, new THREE.IcosahedronGeometry(r * (i ? 0.62 : 0.78), 1), i % 2 ? M.leaf : M.leaf2, Math.cos(a) * rr, 52 + (i % 3) * 9 + (i ? 0 : 14), Math.sin(a) * rr);
+          }
+          break;
+        }
+        default:
+          put(g, rbox(w, (ITEMS[it.type] || {}).h || 70, dp, 2), M.white, 0, 0, 0);
+      }
+      g.position.set(it.x, 0.5, it.y);
+      g.rotation.y = (-(it.rot || 0) * Math.PI) / 180;
+      return g;
+    }
+
     function rebuild() {
       const d = ctx.design();
       world.traverse(o => { if (o.geometry) o.geometry.dispose(); });
       world.clear();
       const H = d.settings.height || 260;
       const cap = mat('#40454b', { roughness: 0.9 });
-      const side = mat('#f5f3ee', { roughness: 0.95 });
-      const glass = mat('#b9d4e0', { transparent: true, opacity: 0.4, roughness: 0.1 });
-      const wood = mat('#cfb48c', { roughness: 0.7 });
+      const side = wallMaterial(H);
+      const pal = Object.assign(palette(), { door: mat('#d8c3a0', { roughness: 0.55 }) });
       const b = bounds(d) || { x: 0, y: 0, w: 600, h: 400 };
 
       const ground = new THREE.Mesh(new THREE.PlaneGeometry(b.w + 800, b.h + 800), mat('#e6e2da'));
@@ -981,15 +1325,25 @@
       world.add(ground);
 
       const shapes = roomShapes(d);
+      ceilings = [];
+      if (!mats.has('ceiling')) mats.set('ceiling', new THREE.MeshBasicMaterial({ color: '#e4e1db', side: THREE.DoubleSide }));
+      const ceilingMat = mats.get('ceiling');
       d.rooms.forEach(r => {
         const sh = shapes.get(r.id);
         if (!sh) return;
         const shape = new THREE.Shape(sh.pts.map(p => new THREE.Vector2(p.x, -p.y)));
-        const floor = new THREE.Mesh(new THREE.ShapeGeometry(shape), mat(r.color && r.color !== '#ffffff' ? r.color : '#f1eee8'));
+        const floor = new THREE.Mesh(new THREE.ShapeGeometry(shape), floorMaterial(r));
         floor.rotation.x = -Math.PI / 2;
         floor.position.y = 0.4;
         floor.receiveShadow = true;
         world.add(floor);
+        // Ceilings are shown only while walking; they cast no shadow, so the rooms stay lit.
+        const ceiling = new THREE.Mesh(new THREE.ShapeGeometry(shape), ceilingMat);
+        ceiling.rotation.x = -Math.PI / 2;
+        ceiling.position.y = H - 0.5;
+        ceiling.visible = walk.on;
+        world.add(ceiling);
+        ceilings.push(ceiling);
       });
 
       const corners = wallCorners(d);
@@ -1013,42 +1367,60 @@
         if (cur < F.L) prism(foot(cur, F.L), 0, H, [cap, side]);
         ops.forEach(({ o, s0, s1 }) => {
           const fp = foot(s0, s1);
+          const M = pal;
+          // a group in the wall's own frame: x along the wall, z across it
+          const mid = add(F.A, mul(F.u, o.pos));
+          const frame = new THREE.Group();
+          frame.position.set(mid.x, 0, mid.y);
+          frame.rotation.y = -Math.atan2(F.u.y, F.u.x);
+          world.add(frame);
+          const t2 = F.h * 2;
           if (o.kind === 'window') {
             const sill = o.sill != null ? o.sill : 90;
+            const wh = o.height;
             prism(fp, 0, sill, [cap, side]);
-            prism(fp, sill + o.height, H, [cap, side]);
-            const pane = new THREE.Mesh(new THREE.PlaneGeometry(o.width, o.height), glass);
-            const mid = add(F.A, mul(F.u, o.pos));
-            pane.position.set(mid.x, sill + o.height / 2, mid.y);
-            pane.rotation.y = -Math.atan2(F.u.y, F.u.x);
-            world.add(pane);
+            prism(fp, sill + wh, H, [cap, side]);
+            const fd = Math.min(t2, 9);
+            put(frame, B(o.width, 6, fd), M.white, 0, sill, 0);
+            put(frame, B(o.width, 6, fd), M.white, 0, sill + wh - 6, 0);
+            put(frame, B(6, wh, fd), M.white, -o.width / 2 + 3, sill, 0);
+            put(frame, B(6, wh, fd), M.white, o.width / 2 - 3, sill, 0);
+            if (o.width >= 100) put(frame, B(5, wh - 12, fd * 0.8), M.white, 0, sill + 6, 0);
+            const pane = new THREE.Mesh(new THREE.PlaneGeometry(o.width - 10, wh - 10), M.glass);
+            pane.position.set(0, sill + wh / 2, 0);
+            frame.add(pane);
+            put(frame, B(o.width + 12, 3, t2 + 8), M.white, 0, sill - 3, 0);
             return;
           }
-          prism(fp, Math.min(H, o.height || 205), H, [cap, side]);
+          const dh = Math.min(H, o.height || 205);
+          prism(fp, dh, H, [cap, side]);
+          if (o.kind !== 'passage') {
+            put(frame, B(4, dh, t2 + 3), M.white, -o.width / 2 + 2, 0, 0);
+            put(frame, B(4, dh, t2 + 3), M.white, o.width / 2 - 2, 0, 0);
+            put(frame, B(o.width, 4, t2 + 3), M.white, 0, dh - 4, 0);
+          }
           if (o.kind === 'door' || o.kind === 'balcony') {
             const sdir = mul(F.n, o.flip ? -1 : 1);
-            const hinge = add(add(F.A, mul(F.u, o.hinge === 'b' ? s1 : s0)), mul(sdir, F.h));
-            const leaf = new THREE.Mesh(new THREE.BoxGeometry(o.width, o.height || 205, 4), o.kind === 'balcony' ? glass : wood);
-            const center = add(hinge, mul(sdir, o.width / 2));
-            leaf.position.set(center.x, (o.height || 205) / 2, center.y);
+            const hinge = add(add(F.A, mul(F.u, o.hinge === 'b' ? s1 - 4 : s0 + 4)), mul(sdir, F.h));
+            const lw = o.width - 8;
+            const leaf = new THREE.Group();
+            leaf.position.set(hinge.x, 0, hinge.y);
             leaf.rotation.y = -Math.atan2(sdir.y, sdir.x);
-            leaf.castShadow = true;
             world.add(leaf);
+            put(leaf, B(lw, dh - 2, 4), o.kind === 'balcony' ? M.white : M.door, lw / 2, 0, 0);
+            if (o.kind === 'balcony') {
+              const pane = new THREE.Mesh(new THREE.PlaneGeometry(lw - 16, dh - 40), M.glass);
+              pane.position.set(lw / 2, dh / 2 + 5, 2.2);
+              leaf.add(pane);
+            }
+            [-3.2, 3.2].forEach(z => put(leaf, B(12, 2, 2), M.metal, lw - 9, 100, z));
           }
         });
       });
 
       corners.hubs.forEach(h => prism(h, 0, H, [cap, side]));
 
-      d.items.forEach(it => {
-        const def = ITEMS[it.type] || { h: 70, color: '#ddd' };
-        const box = new THREE.Mesh(new THREE.BoxGeometry(it.w, def.h, it.d), mat(def.color));
-        box.position.set(it.x, def.h / 2 + 0.5, it.y);
-        box.rotation.y = (-(it.rot || 0) * Math.PI) / 180;
-        box.castShadow = true;
-        box.receiveShadow = true;
-        world.add(box);
-      });
+      d.items.forEach(it => world.add(furniture(it, pal, H)));
 
       const size = Math.max(b.w, b.h, 300);
       sun.position.set(b.x + b.w * 0.2, H + size * 1.2, b.y + b.h * 1.3);
@@ -1063,6 +1435,7 @@
         first = false;
         resetView();
       }
+      if (walk.on) obstacles();
       requestRender();
     }
 
@@ -1091,27 +1464,314 @@
     }
 
     const rotate = (dx, dy) => {
+      if (walk.on) {
+        // drag moves the view like grabbing it (as in street view)
+        walk.yaw -= dx * 0.0045;
+        walk.pitch = clamp(walk.pitch + dy * 0.0045, -1.25, 1.25);
+        return;
+      }
       orbit.theta -= dx * 0.006;
       orbit.phi = clamp(orbit.phi - dy * 0.006, 0.05, 1.5);
       applyCamera();
     };
     const zoom = f => {
+      if (walk.on) return;
       orbit.radius = clamp(orbit.radius * f, 100, 12000);
       applyCamera();
     };
 
+    // Solid wall pieces (door openings are gaps, windows are not) and furniture as obstacles.
+    function obstacles() {
+      const d = ctx.design();
+      walk.segs = [];
+      d.walls.forEach(w => {
+        const F = wallFrame(d, w);
+        if (F.L < 0.5) return;
+        const gaps = d.openings.filter(o => o.wall === w.id && o.kind !== 'window').map(o => [o.pos - o.width / 2, o.pos + o.width / 2]).sort((a, b) => a[0] - b[0]);
+        const piece = (s0, s1) => walk.segs.push({ a: add(F.A, mul(F.u, s0)), b: add(F.A, mul(F.u, s1)), r: F.h });
+        let cur = 0;
+        gaps.forEach(([a, b]) => {
+          if (a > cur) piece(cur, a);
+          cur = Math.max(cur, b);
+        });
+        if (cur < F.L) piece(cur, F.L);
+      });
+      walk.boxes = d.items.filter(it => (ITEMS[it.type] || {}).h > 30).map(it => ({ x: it.x, y: it.y, hw: it.w / 2, hd: it.d / 2, rot: ((it.rot || 0) * Math.PI) / 180 }));
+    }
+
+    const BODY = 22;
+
+    // Pushes a position out of walls and furniture, so the walker slides along them.
+    function resolve(p) {
+      let q = { x: p.x, y: p.y };
+      for (let k = 0; k < 4; k++) {
+        walk.segs.forEach(sg => {
+          const pr = project(q, sg.a, sg.b);
+          const min = BODY + sg.r;
+          if (pr.dist < min) {
+            const n = pr.dist > 1e-6 ? unit(sub(q, pr.point)) : leftOf(unit(sub(sg.b, sg.a)));
+            q = add(pr.point, mul(n, min));
+          }
+        });
+        walk.boxes.forEach(b => {
+          const c = Math.cos(b.rot);
+          const s = Math.sin(b.rot);
+          const dx = q.x - b.x;
+          const dy = q.y - b.y;
+          let lx = dx * c + dy * s;
+          let ly = -dx * s + dy * c;
+          const cx = clamp(lx, -b.hw, b.hw);
+          const cy = clamp(ly, -b.hd, b.hd);
+          const dd = Math.hypot(lx - cx, ly - cy);
+          if (dd >= BODY) return;
+          if (dd > 1e-6) {
+            lx = cx + ((lx - cx) / dd) * BODY;
+            ly = cy + ((ly - cy) / dd) * BODY;
+          } else {
+            const pxp = b.hw - Math.abs(lx);
+            const pyp = b.hd - Math.abs(ly);
+            if (pxp < pyp) lx = Math.sign(lx || 1) * (b.hw + BODY);
+            else ly = Math.sign(ly || 1) * (b.hd + BODY);
+          }
+          q = { x: b.x + lx * c - ly * s, y: b.y + lx * s + ly * c };
+        });
+      }
+      return q;
+    }
+
+    function rayDistance(p, a) {
+      const far = 5000;
+      const q = add(p, { x: Math.cos(a) * far, y: Math.sin(a) * far });
+      let m = far;
+      walk.segs.forEach(sg => {
+        const hit = segX(p, q, sg.a, sg.b);
+        if (hit) m = Math.min(m, hit.t * far);
+      });
+      return m;
+    }
+
+    // Start in the middle of the largest room, looking where there is most to see.
+    function startPose() {
+      const d = ctx.design();
+      const shapes = roomShapes(d);
+      let best = null;
+      d.rooms.forEach(r => {
+        const sh = shapes.get(r.id);
+        if (sh && (!best || sh.area > best.area)) best = sh;
+      });
+      const b = bounds(d) || { x: 0, y: 0, w: 400, h: 300 };
+      if (best) {
+        for (const o of d.openings) {
+          const w = wallOf(d, o.wall);
+          if (!w || o.kind === 'window') continue;
+          const F = wallFrame(d, w);
+          const c = add(F.A, mul(F.u, o.pos));
+          for (const k of [1, -1]) {
+            const q = add(c, mul(F.n, k * (F.h + 70)));
+            if (inside(q, best.pts)) return { pos: resolve(q), yaw: Math.atan2(F.n.y * k, F.n.x * k) };
+          }
+        }
+      }
+      const pos = resolve(best ? labelPoint(best.pts) : { x: b.x + b.w / 2, y: b.y + b.h / 2 });
+      let yaw = 0;
+      let far = -1;
+      for (let i = 0; i < 36; i++) {
+        const a = (i * Math.PI) / 18;
+        const dd = rayDistance(pos, a);
+        if (dd > far) {
+          far = dd;
+          yaw = a;
+        }
+      }
+      return { pos, yaw };
+    }
+
+    function placeCamera() {
+      const cp = Math.cos(walk.pitch);
+      camera.position.set(walk.pos.x, walk.eye, walk.pos.y);
+      camera.lookAt(walk.pos.x + cp * Math.cos(walk.yaw), walk.eye + Math.sin(walk.pitch), walk.pos.y + cp * Math.sin(walk.yaw));
+    }
+
+    function step(t) {
+      if (!walk.on || disposed) return;
+      const dt = Math.min(0.05, (t - (walk.last || t)) / 1000);
+      walk.last = t;
+      const k = walk.keys;
+      let fwd = 0;
+      let side = 0;
+      let turn = 0;
+      if (k.has('w') || k.has('arrowup')) fwd += 1;
+      if (k.has('s') || k.has('arrowdown')) fwd -= 1;
+      if (k.has('a')) side -= 1;
+      if (k.has('d')) side += 1;
+      if (k.has('arrowleft') || k.has('q')) turn -= 1;
+      if (k.has('arrowright') || k.has('e')) turn += 1;
+      fwd -= walk.joy.y;
+      side += walk.joy.x;
+      walk.yaw += turn * 1.8 * dt;
+      const m = Math.hypot(fwd, side);
+      if (m > 1) {
+        fwd /= m;
+        side /= m;
+      }
+      if (fwd || side) {
+        const speed = (k.has('shift') ? 320 : 150) * dt;
+        const f = { x: Math.cos(walk.yaw), y: Math.sin(walk.yaw) };
+        const r = { x: -f.y, y: f.x };
+        walk.pos = resolve(add(walk.pos, add(mul(f, fwd * speed), mul(r, side * speed))));
+      }
+      placeCamera();
+      fill.position.set(walk.pos.x, walk.eye + 40, walk.pos.y);
+      renderer.render(scene, camera);
+      if (walk.mini) walk.mini.me.setAttribute('transform', `translate(${n2(walk.pos.x)} ${n2(walk.pos.y)}) rotate(${n2((walk.yaw * 180) / Math.PI)})`);
+      walk.raf = requestAnimationFrame(step);
+    }
+
+    function buildMinimap() {
+      const d = ctx.design();
+      const b = bounds(d) || { x: 0, y: 0, w: 400, h: 300 };
+      const px = Math.max(b.w, b.h) / 220;
+      const el = document.createElement('div');
+      el.className = 'fp-mini';
+      el.title = ctx.labels.miniTitle;
+      const r = Math.max(b.w, b.h) / 45;
+      el.innerHTML = `<svg viewBox="${n2(b.x)} ${n2(b.y)} ${n2(b.w)} ${n2(b.h)}" preserveAspectRatio="xMidYMid meet">${planSvg(d, px, { dims: false }).svg}<g class="fp-me"><path d="M0 0L${n2(r * 4)} ${n2(-r * 2.2)}A${n2(r * 4.6)} ${n2(r * 4.6)} 0 0 1 ${n2(r * 4)} ${n2(r * 2.2)}Z" fill="#2f6f62" opacity=".35"/><circle r="${n2(r)}" fill="#2f6f62" stroke="#fff" stroke-width="${n2(r * 0.35)}"/></g></svg>`;
+      const svg = el.querySelector('svg');
+      el.addEventListener('pointerdown', ev => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        canvas.focus({ preventScroll: true });
+        const pt = svg.createSVGPoint();
+        pt.x = ev.clientX;
+        pt.y = ev.clientY;
+        const w = pt.matrixTransform(svg.getScreenCTM().inverse());
+        walk.pos = resolve({ x: w.x, y: w.y });
+      });
+      ctx.wrap.appendChild(el);
+      walk.mini = { el, me: el.querySelector('.fp-me') };
+    }
+
+    function buildJoystick() {
+      const el = document.createElement('div');
+      el.className = 'fp-joy';
+      el.innerHTML = '<i></i>';
+      const knob = el.firstChild;
+      let id = null;
+      const set = ev => {
+        const r = el.getBoundingClientRect();
+        let dx = ev.clientX - (r.left + r.width / 2);
+        let dy = ev.clientY - (r.top + r.height / 2);
+        const max = r.width / 2 - 10;
+        const l = Math.hypot(dx, dy);
+        if (l > max) {
+          dx = (dx / l) * max;
+          dy = (dy / l) * max;
+        }
+        walk.joy = { x: dx / max, y: dy / max };
+        knob.style.transform = `translate(${dx}px, ${dy}px)`;
+      };
+      const reset = () => {
+        id = null;
+        walk.joy = { x: 0, y: 0 };
+        knob.style.transform = '';
+      };
+      el.addEventListener('pointerdown', ev => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        canvas.focus({ preventScroll: true });
+        id = ev.pointerId;
+        el.setPointerCapture(id);
+        set(ev);
+      });
+      el.addEventListener('pointermove', ev => { if (ev.pointerId === id) set(ev); });
+      el.addEventListener('pointerup', reset);
+      el.addEventListener('pointercancel', reset);
+      ctx.wrap.appendChild(el);
+      walk.joyEl = el;
+    }
+
+    const onKey = ev => {
+      if (!walk.on) return;
+      const k = ev.key.toLowerCase();
+      if (ev.type === 'keydown') {
+        if (k === 'escape') {
+          exitWalk();
+          return;
+        }
+        walk.keys.add(k);
+        if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) ev.preventDefault();
+      } else walk.keys.delete(k);
+    };
+    const clearKeys = () => walk.keys.clear();
+    canvas.addEventListener('keydown', onKey);
+    canvas.addEventListener('keyup', onKey);
+    canvas.addEventListener('blur', clearKeys);
+
+    function enterWalk() {
+      if (walk.on) return;
+      walk.on = true;
+      obstacles();
+      const start = startPose();
+      walk.pos = start.pos;
+      walk.yaw = start.yaw;
+      walk.pitch = -0.05;
+      camera.fov = 70;
+      camera.updateProjectionMatrix();
+      ceilings.forEach(c => { c.visible = true; });
+      hemi.intensity = 1.3;
+      sun.intensity = 1.0;
+      fill.intensity = 0.55;
+      scene.background = new THREE.Color('#d6e3ec');
+      buildMinimap();
+      buildJoystick();
+      canvas.focus({ preventScroll: true });
+      walk.last = 0;
+      walk.raf = requestAnimationFrame(step);
+      if (ctx.onWalk) ctx.onWalk(true);
+    }
+
+    function exitWalk() {
+      if (!walk.on) return;
+      walk.on = false;
+      cancelAnimationFrame(walk.raf);
+      walk.keys.clear();
+      walk.joy = { x: 0, y: 0 };
+      if (walk.mini) walk.mini.el.remove();
+      if (walk.joyEl) walk.joyEl.remove();
+      walk.mini = null;
+      walk.joyEl = null;
+      camera.fov = 40;
+      camera.updateProjectionMatrix();
+      ceilings.forEach(c => { c.visible = false; });
+      hemi.intensity = 1.45;
+      sun.intensity = 2.1;
+      fill.intensity = 0;
+      scene.background = new THREE.Color('#f4f2ee');
+      applyCamera();
+      if (ctx.onWalk) ctx.onWalk(false);
+    }
+
     function dispose() {
+      exitWalk();
       disposed = true;
       cancelAnimationFrame(raf);
       ro.disconnect();
       world.traverse(o => { if (o.geometry) o.geometry.dispose(); });
       mats.forEach(m => m.dispose());
+      textures.forEach(t => t.dispose());
       renderer.dispose();
       canvas.remove();
     }
 
     resize();
-    return { canvas, rebuild, resize, rotate, zoom, resetView, topView, dispose };
+    function setPose(x, y, yawDeg) {
+      if (!walk.on) enterWalk();
+      walk.pos = resolve({ x, y });
+      if (yawDeg != null) walk.yaw = (yawDeg * Math.PI) / 180;
+      walk.pitch = -0.08;
+    }
+
+    return { canvas, rebuild, resize, rotate, zoom, resetView, topView, enterWalk, exitWalk, setPose, walking: () => walk.on, walkState: () => ({ pos: walk.pos, yaw: walk.yaw }), dispose };
   }
 
   // ---------------------------------------------------------------------------
@@ -1162,6 +1822,11 @@
     finish: 'Završi zid',
     loading3d: 'Učitavam 3D prikaz…', error3d: '3D prikaz nije dostupan u ovom pregledniku.', resetView: 'Početni pogled', topView: 'Odozgo',
     hint3d: 'Povuci za okretanje · točkić ili dva prsta za zum · uređuje se u 2D',
+    walk: 'Šetnja',
+    walkExit: 'Izađi iz šetnje',
+    hintWalk: 'W A S D ili strelice za hod · povuci mišem za pogled · Shift za brže · klik na mapu za skok · Esc za izlaz',
+    hintWalkTouch: 'Palcem na krugu lijevo hodaj, prstom po slici gledaj okolo · dodirni mapu za skok',
+    miniTitle: 'Klikni na mapu da se prebaciš na to mjesto',
     canvas: 'Tlocrt', canvas3d: 'Tlocrt u 3D',
     newRoom: n => `Prostorija ${n}`,
     newText: 'Tekst',
@@ -1222,6 +1887,13 @@ button,input,select{font:inherit;color:inherit}
 .fp-3d{position:absolute;inset:0;background:var(--fp-surface)}
 .fp-3d-canvas{position:absolute;inset:0;display:block;width:100%;height:100%;outline:none;cursor:grab;touch-action:none}
 .fp-3d-ui{position:absolute;left:12px;top:12px;display:flex;gap:6px}
+.fp-3d-ui .fp-btn{gap:6px}
+.fp-mini{position:absolute;right:12px;bottom:12px;width:230px;height:180px;padding:6px;background:rgba(255,255,255,.93);border:1px solid var(--fp-border);border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,.15);cursor:crosshair;touch-action:none}
+.fp-mini svg{display:block;width:100%;height:100%}
+.fp-mini text{display:none}
+.fp-joy{position:absolute;left:18px;bottom:18px;display:none;width:124px;height:124px;border-radius:50%;background:rgba(31,35,40,.18);border:2px solid rgba(255,255,255,.85);touch-action:none}
+.fp-joy i{position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;border-radius:50%;background:rgba(255,255,255,.92);box-shadow:0 2px 8px rgba(0,0,0,.25)}
+@media (hover:none) and (pointer:coarse){.fp-joy{display:block}}
 .fp-3d-msg{position:absolute;inset:0;display:grid;place-items:center;padding:16px;text-align:center;color:var(--fp-muted)}
 .fp-panel{grid-area:panel;display:flex;flex-direction:column;gap:16px;min-height:0;overflow:auto;padding:16px;border-left:1px solid var(--fp-border)}
 .fp-panel h3{margin:0;font-size:15px}
@@ -1264,6 +1936,7 @@ button,input,select{font:inherit;color:inherit}
   .fp-tool{min-width:62px}
   .fp-main{height:min(68vh,560px)}
   .fp-hint{display:none}
+  .fp-mini{width:130px;height:104px}
 }
 `;
 
@@ -1332,8 +2005,13 @@ button,input,select{font:inherit;color:inherit}
     <div class="fp-stage">
       <svg class="fp-svg" tabindex="0" role="application" aria-label="${esc(L.canvas)}" xmlns="http://www.w3.org/2000/svg"><g class="fp-layer"></g></svg>
       <div class="fp-3d" hidden>
-        <div class="fp-3d-ui"><button type="button" class="fp-btn" data-act="view-reset">⟲ ${esc(L.resetView)}</button><button type="button" class="fp-btn" data-act="view-top">${esc(L.topView)}</button></div>
-        <div class="fp-hint">${esc(L.hint3d)}</div>
+        <div class="fp-3d-ui">
+          <button type="button" class="fp-btn fp-primary" data-act="walk"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="2"/><path d="M11 21l2-6-3-3 1-5 3 3 3 1M9 12l-3 2M13 15l3 6"/></svg>${esc(L.walk)}</button>
+          <button type="button" class="fp-btn" data-act="view-reset">⟲ ${esc(L.resetView)}</button>
+          <button type="button" class="fp-btn" data-act="view-top">${esc(L.topView)}</button>
+          <button type="button" class="fp-btn fp-primary" data-act="walk-exit" hidden>✕ ${esc(L.walkExit)}</button>
+        </div>
+        <div class="fp-hint fp-hint3d">${esc(L.hint3d)}</div>
         <div class="fp-3d-msg" hidden></div>
       </div>
       <div class="fp-hint fp-hint2d"></div>
@@ -2206,6 +2884,8 @@ button,input,select{font:inherit;color:inherit}
           renderPanel();
           toast(L.cleared);
           break;
+        case 'walk': if (scene3d) scene3d.enterWalk(); break;
+        case 'walk-exit': if (scene3d) scene3d.exitWalk(); break;
         case 'view-reset': if (scene3d) scene3d.resetView(); break;
         case 'view-top': if (scene3d) scene3d.topView(); break;
       }
@@ -2463,6 +3143,7 @@ button,input,select{font:inherit;color:inherit}
         if ((ev.key === 'Enter' || ev.key === 'Escape') && t.dataset.prop) els.svg.focus({ preventScroll: true });
         return;
       }
+      if (ui.view === '3d') return;
       if (mod && ev.key.toLowerCase() === 'z') { ev.preventDefault(); ev.shiftKey ? redo() : undo(); return; }
       if (mod && ev.key.toLowerCase() === 'y') { ev.preventDefault(); redo(); return; }
       if (mod) return;
@@ -2579,6 +3260,7 @@ button,input,select{font:inherit;color:inherit}
       }
       updateBar();
       if (v === '2d') {
+        if (scene3d) scene3d.exitWalk();
         schedule();
         return;
       }
@@ -2595,7 +3277,7 @@ button,input,select{font:inherit;color:inherit}
         els.msg3d.textContent = L.loading3d;
         els.msg3d.hidden = false;
         loading3d = loadThree(opts).then(THREE => {
-          scene3d = createScene3D(THREE, { wrap: els.v3d, design: () => design, label: L.canvas3d });
+          scene3d = createScene3D(THREE, { wrap: els.v3d, design: () => design, label: L.canvas3d, labels: L, onWalk: walkUi });
           els.msg3d.hidden = true;
           const c = scene3d.canvas;
           const pts = new Map();
@@ -2639,6 +3321,13 @@ button,input,select{font:inherit;color:inherit}
         });
       }
       return loading3d;
+    }
+
+    // Buttons and hint follow the walk mode (it can also end with Esc inside the 3D view).
+    function walkUi(on) {
+      shadow.querySelectorAll('.fp-3d-ui [data-act]').forEach(b => { b.hidden = (b.dataset.act === 'walk-exit') !== on; });
+      const touch = typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: coarse)').matches;
+      shadow.querySelector('.fp-hint3d').textContent = on ? (touch ? L.hintWalkTouch : L.hintWalk) : L.hint3d;
     }
 
     function pinch(pts) {
@@ -2896,6 +3585,10 @@ button,input,select{font:inherit;color:inherit}
       exportPng,
       exportJson,
       importText,
+      walk: () => setView('3d') || ensure3d().then(sc => sc.enterWalk()),
+      // Puts the walker at a plan point (cm), looking at `yaw` degrees (0 = towards +x, 90 = down the plan).
+      walkTo: (x, y, yaw) => { setView('3d'); return ensure3d().then(sc => sc.setPose(x, y, yaw)); },
+      walkState: () => (scene3d && scene3d.walking() ? scene3d.walkState() : null),
       areas() {
         const sh = roomShapes(design);
         return design.rooms.map(r => ({ id: r.id, name: r.name, m2: sh.get(r.id) ? Math.round(sh.get(r.id).area / 100) / 100 : null }));
