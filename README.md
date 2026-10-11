@@ -11,14 +11,14 @@ Drag & drop planer kuhinja iz elemenata za web prodavnice. Kupac bira liniju (Ar
 Skripta je javno dostupna preko jsDelivr CDN-a (direktno iz ovog repoa):
 
 ```html
-<script src="https://cdn.jsdelivr.net/gh/mirhat/elements@v0.1.0/src/kitchen-planner.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/mirhat/elements@v0.1.1/src/kitchen-planner.min.js"></script>
 ```
 
-`@v0.1.0` je fiksna verzija i nikad se ne mijenja. Za novu verziju napravi novi tag (npr. `v0.1.1`) i promijeni broj u linku. `@main` uvijek daje zadnju verziju, ali je CDN kešira do 12 sati.
+`@v0.1.1` je fiksna verzija i nikad se ne mijenja. Za novu verziju napravi novi tag (npr. `v0.1.2`) i promijeni broj u linku. `@main` uvijek daje zadnju verziju, ali je CDN kešira do 12 sati.
 
 ```html
 <div id="planer"></div>
-<script src="https://cdn.jsdelivr.net/gh/mirhat/elements@v0.1.0/src/kitchen-planner.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/mirhat/elements@v0.1.1/src/kitchen-planner.min.js"></script>
 <script>
   KitchenPlanner.create({
     container: '#planer',
@@ -32,7 +32,9 @@ Skripta je javno dostupna preko jsDelivr CDN-a (direktno iz ovog repoa):
 </script>
 ```
 
-Demo: otvori `demo/index.html` u pregledniku (radi i bez servera; 3D treba internet zbog three.js sa CDN-a).
+Demo: https://mirhat.github.io/elements/ (ili lokalno `demo/index.html`, radi i bez servera; 3D treba internet zbog three.js sa CDN-a).
+
+Demo se objavljuje iz grane `gh-pages`. Nakon izmjena: `git push origin main:gh-pages`.
 
 ## Opcije
 

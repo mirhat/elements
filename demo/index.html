@@ -4,42 +4,86 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Planer kuhinje – demo</title>
+  <meta name="description" content="Planer kuhinje iz elemenata za web prodavnice: drag & drop, L i U kuhinje, 2D i 3D prikaz, upit sa tačnim spiskom elemenata.">
   <style>
-    body { margin: 0; background: #f4f2ee; color: #23262a; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    body { margin: 0; background: #f4f2ee; color: #23262a; font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
     .shop-bar { padding: 14px 20px; background: #23262a; color: #fff; font-weight: 600; }
-    main { max-width: 1440px; margin: 0 auto; padding: 20px 16px 48px; }
-    h1 { margin: 0 0 4px; font-size: 26px; }
-    .note { margin: 0 0 18px; color: #6a6f76; font-size: 14px; }
-    h2 { margin: 32px 0 8px; font-size: 17px; }
-    pre { max-height: 320px; overflow: auto; padding: 12px; background: #fff; border: 1px solid #e3e0d9; border-radius: 8px; font-size: 12px; }
+    main { max-width: 1440px; margin: 0 auto; padding: 24px 16px 56px; }
+    h1 { margin: 0 0 6px; font-size: 28px; line-height: 1.2; }
+    .lead { margin: 0 0 10px; max-width: 75ch; font-size: 16px; }
+    .tips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; padding: 0; list-style: none; }
+    .tips li { padding: 6px 12px; background: #fff; border: 1px solid #e3e0d9; border-radius: 999px; font-size: 14px; }
+    .note { margin: 0 0 18px; color: #6a6f76; font-size: 13.5px; }
+    h2 { margin: 36px 0 6px; font-size: 19px; }
+    .muted { margin: 0 0 12px; color: #6a6f76; max-width: 75ch; }
+    .order { max-width: 760px; padding: 16px; background: #fff; border: 1px solid #e3e0d9; border-radius: 10px; }
+    .order table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .order th, .order td { padding: 7px 6px; border-bottom: 1px solid #eeebe5; text-align: left; vertical-align: top; }
+    .order th { color: #6a6f76; font-weight: 600; font-size: 12.5px; }
+    .order .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .order small { color: #6a6f76; }
+    .order .total td { border-bottom: 0; font-weight: 700; font-size: 16px; }
+    .order .facts { margin: 12px 0 0; color: #4b4f55; font-size: 14px; }
+    details { margin-top: 12px; }
+    summary { cursor: pointer; color: #6a6f76; font-size: 13.5px; }
+    pre { max-height: 320px; overflow: auto; padding: 12px; background: #f7f6f3; border-radius: 8px; font-size: 12px; }
   </style>
 </head>
 <body>
   <div class="shop-bar">Demo prodavnica namještaja</div>
   <main>
     <h1>Složi svoju kuhinju</h1>
-    <p class="note">Cijene na ovoj stranici su izmišljene, samo za demo. Prave cijene se predaju kroz opciju <code>prices</code> ili <code>getPrice</code>.</p>
+    <p class="lead">Ovako planer izgleda ugrađen u web prodavnicu. Kupac bira liniju kuhinje, prevlači elemente na zidove, gleda kuhinju u 2D i 3D i šalje upit sa tačnim spiskom elemenata.</p>
+    <ul class="tips">
+      <li>1. Gore lijevo izaberi raspored: jedan zid, L ili U</li>
+      <li>2. Prevuci elemente iz kataloga na zid</li>
+      <li>3. Klikni 3D i okreni kuhinju mišem</li>
+      <li>4. Pošalji upit ili preuzmi specifikaciju</li>
+    </ul>
+    <p class="note">Cijene u ovom demu su izmišljene. U vašoj prodavnici prikazuju se vaše cijene, boje i logo.</p>
 
     <div id="planer"></div>
 
-    <h2>Zadnji upit (onCheckout)</h2>
-    <pre id="log">Klikni "Pošalji upit" u planeru.</pre>
+    <h2>Šta prodavnica dobije kad kupac pošalje upit</h2>
+    <p class="muted">Spisak elemenata sa šiframa, količinama i cijenama, potrebna radna ploča i cokla, te mjere i raspored zidova. Iz upita se kuhinja može ponovo otvoriti u planeru.</p>
+    <div class="order" id="order"><span class="muted">Složi kuhinju i klikni "Pošalji upit" u planeru.</span></div>
   </main>
 
   <script src="katalog.js"></script>
   <script src="../src/kitchen-planner.js"></script>
   <script>
+    const money = new Intl.NumberFormat('hr-HR', { style: 'currency', currency: 'BAM', currencyDisplay: 'narrowSymbol' });
+    const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+    function showOrder(order) {
+      const rows = order.lines.map(l => `<tr>
+        <td class="num">${l.qty}×</td>
+        <td>${esc(l.name)}<br><small>Šifra ${esc(l.sku)}</small></td>
+        <td class="num">${l.total != null ? money.format(l.total) : 'na upit'}</td></tr>`).join('');
+      const walls = order.design.walls.map(w => `zid ${w.id} ${w.width} cm`).join(', ');
+      const facts = [`Zidovi: ${walls}`];
+      if (order.worktopCm) facts.push(`radna ploča ${order.worktopCm} cm`);
+      if (order.plinthCm) facts.push(`cokla ${order.plinthCm} cm`);
+      document.getElementById('order').innerHTML = `
+        <table>
+          <thead><tr><th class="num">Kom</th><th>Element</th><th class="num">Iznos</th></tr></thead>
+          <tbody>${rows}</tbody>
+          ${order.total != null ? `<tfoot><tr class="total"><td></td><td>Ukupno</td><td class="num">${money.format(order.total)}</td></tr></tfoot>` : ''}
+        </table>
+        <p class="facts">${esc(facts.join(' · '))}</p>
+        <details><summary>Tehnički format (za programere)</summary><pre>${esc(JSON.stringify(order, null, 2))}</pre></details>`;
+      document.getElementById('order').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
     window.planer = KitchenPlanner.create({
       container: '#planer',
       elements: window.KP_ELEMENTS,
       storageKey: 'demo',
-      // DEMO cijene – izmišljene
+      // Demo cijene, izmišljene
       getPrice: el => el.type === 'plinth'
         ? Math.round(el.width * 0.09)
         : Math.round(35 + el.width * 1.4 + el.height * 0.7),
-      onCheckout(order) {
-        document.getElementById('log').textContent = JSON.stringify(order, null, 2);
-      },
+      onCheckout: showOrder,
     });
   </script>
 </body>

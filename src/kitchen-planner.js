@@ -12,7 +12,7 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const VERSION = '0.1.0';
+  const VERSION = '0.1.1';
 
   // Heights in cm. Base units are 82 cm including 10 cm legs; wall units hang with
   // their top aligned to the top of the tall units.
@@ -96,7 +96,13 @@
     else if (/sa ladicom/.test(d)) drawers = 1;
     else if (type === 'drawers') drawers = 3;
     const f = name.match(/(?:^|\s)(\d)\s?[FV](?=$|[\s-])/);
-    let doors = f ? +f[1] : TYPES[type].zone === 'tall' ? 2 : width >= 80 ? 2 : 1;
+    // Without 1F/2V in the name the description tells: "fronta" (one) or "fronte" (several).
+    let doors = f ? +f[1]
+      : /\bfronte\b/.test(d) ? 2
+      : /\bfronta\b/.test(d) ? 1
+      : TYPES[type].zone === 'tall' ? 2 : width >= 80 ? 2 : 1;
+    // "fronte" also counts a drawer front, so a unit with one drawer has a single door below it.
+    if (!f && drawers === 1) doors = width >= 80 ? 2 : 1;
     if (type === 'drawers' || drawers >= 2) doors = 0;
     return { doors, drawers, glass: type === 'wall-glass' };
   }
@@ -352,11 +358,12 @@
   /**
    * SVG front view of one element (units: cm).
    * opt.thumb keeps the aspect ratio in a fixed box, opt.legs=false leaves out the plinth,
-   * opt.gloss=false drops the painted shine (the 3D view has real reflections), opt.size=[w,h] in px.
+   * opt.gloss=false drops the painted shine (the 3D view has real reflections), opt.size=[w,h] in px,
+   * opt.width + opt.segments draw an explicit row of doors / side panels (corner units).
    */
   function drawSvg(el, opt) {
     opt = opt || {};
-    const w = el.width;
+    const w = opt.width || el.width;
     const full = renderHeight(el);
     const ch = el.zone !== 'wall' ? full - PLINTH : full;
     const legs = el.zone !== 'wall' && opt.legs !== false;
@@ -364,14 +371,60 @@
     let s = '';
     if (legs) s += fillRect(1.5, ch, w - 3, PLINTH, shade(el.corpusColor, -0.45));
     s += rect(0, 0, w, ch, el.corpusColor);
-    s += drawFronts(el, 0.5, 0.5, w - 1, ch - 1, opt.gloss !== false);
+    s += opt.segments ? drawSegments(el, opt.segments, ch, opt.gloss !== false) : drawFronts(el, 0.5, 0.5, w - 1, ch - 1, opt.gloss !== false);
     const size = opt.size ? ` width="${opt.size[0]}" height="${opt.size[1]}"` : '';
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}"${size} preserveAspectRatio="${opt.thumb ? 'xMidYMax meet' : 'none'}" aria-hidden="true" focusable="false">${s}</svg>`;
   }
 
-  // A dishwasher "element" is only its door; in plan view it takes a full base depth.
+  function drawSegments(el, segments, h, shine) {
+    const v = el.zone === 'wall' ? 'bottom' : 'top';
+    return segments.map(sg => {
+      if (sg.kind === 'side') return rect(sg.x + 0.5, 0.5, sg.w - 1, h - 1, shade(el.corpusColor, -0.12));
+      const panel = frontPanel(el, sg.x + 0.5, 0.5, sg.w - 1, h - 1, sg.kind === 'door' ? sg.handle + '-' + v : null, { shine });
+      // A front that runs diagonally across the corner is seen at an angle: a touch darker.
+      return sg.angled ? panel + fillRect(sg.x + 0.5, 0.5, sg.w - 1, h - 1, '#000', ' opacity=".1"') : panel;
+    }).join('');
+  }
+
+  // Corner units, as in the product photos:
+  //  'L'        base 90×90: two arms as deep as the neighbouring units, a door on each arm;
+  //  'blind'    base 100×60 (Una/Tisa D UG): straight, the part towards the corner is blind;
+  //  'diagonal' wall 60×60: five-sided, one front (one or two doors) across the corner.
+  function cornerKind(el) {
+    if (el.type === 'base-corner') return el.width >= 95 ? 'blind' : 'L';
+    if (el.type === 'wall-corner') return 'diagonal';
+    return null;
+  }
+
+  // How far an element reaches along the neighbouring wall when it stands in the corner.
+  // A dishwasher "element" is only its door but takes a full base depth; some 90/90 corner
+  // units list only their arm depth, so their footprint is taken as square.
   function depthOf(el) {
-    return el.type === 'dishwasher' ? 56 : el.depth || 0;
+    if (el.type === 'dishwasher') return 56;
+    if (cornerKind(el) === 'L' || cornerKind(el) === 'diagonal') return el.depth >= el.width * 0.8 ? el.depth : el.width;
+    return el.depth || 0;
+  }
+
+  /**
+   * Front of a corner unit seen from one wall, with the corner on `side` ('left' / 'right').
+   * L and diagonal: the door(s), then the end of the part along the other wall (the diagonal
+   * front is seen at an angle). Blind: the door, then the blind part.
+   */
+  function cornerSegments(el, side, arm, width) {
+    const w = width || el.width;
+    const kindOf = cornerKind(el);
+    const rest = kindOf === 'blind' ? Math.min(w - 20, el.depth) : arm;
+    const kind = kindOf === 'blind' ? 'blind' : 'side';
+    const angled = kindOf === 'diagonal';
+    const dw = w - rest;
+    const doors = angled && el.fronts && el.fronts.doors >= 2
+      ? [{ w: dw / 2, handle: 'right' }, { w: dw / 2, handle: 'left' }]
+      : [{ w: dw, handle: side === 'left' ? 'left' : 'right' }];
+    const out = [];
+    let x = side === 'left' ? rest : 0;
+    doors.forEach(d => { out.push({ x, w: d.w, kind: 'door', handle: d.handle, angled }); x += d.w; });
+    out.push({ x: side === 'left' ? 0 : dw, w: rest, kind });
+    return out.sort((a, b) => a.x - b.x);
   }
 
   const FAUCET_SVG = '<svg viewBox="0 0 16 24" aria-hidden="true"><path d="M8 22V7q0-5 4.5-5T17 7v2.5" fill="none" stroke="#9aa0a6" stroke-width="1.8" stroke-linecap="round"/><rect x="5" y="21" width="6" height="3" rx="1" fill="#8a9096"/></svg>';
@@ -473,12 +526,13 @@
     }
 
     // The front face reuses the 2D drawing, rasterised into a texture.
-    function frontMaterial(el) {
-      const key = String(el.id);
+    // variant = { width, segments } draws one part of a corner unit instead of the whole front.
+    function frontMaterial(el, variant) {
+      const key = String(el.id) + (variant ? ':' + variant.width + JSON.stringify(variant.segments) : '');
       if (fronts.has(key)) return fronts.get(key);
       const m = new THREE.MeshStandardMaterial({ color: el.frontColor, roughness: el.gloss ? 0.3 : 0.75, metalness: 0 });
       fronts.set(key, m);
-      const w = el.width;
+      const w = variant ? variant.width : el.width;
       const h = renderHeight(el) - (el.zone !== 'wall' ? PLINTH : 0);
       const k = clamp(Math.floor(1600 / Math.max(w, h)), 2, 6);
       const pw = Math.round(w * k);
@@ -498,7 +552,7 @@
         m.needsUpdate = true;
         requestRender();
       };
-      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(drawSvg(el, { legs: false, gloss: false, size: [pw, ph] }));
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(drawSvg(el, { legs: false, gloss: false, size: [pw, ph], width: w, segments: variant && variant.segments }));
       return m;
     }
 
@@ -536,31 +590,107 @@
       const g = new THREE.Group();
       g.userData.uid = it.uid;
       const legs = el.zone !== 'wall';
-      const full = renderHeight(el);
-      const ch = legs ? full - PLINTH : full;
-      const d = Math.max(2, depthOf(el) || 50);
+      const ch = renderHeight(el) - (legs ? PLINTH : 0);
       const y0 = el.zone === 'wall' ? ctx.wallTop - el.height : 0;
-      const cx = it.x + el.width / 2;
-      const side = material(el.type === 'dishwasher' ? '#9ea3a9' : el.corpusColor);
-      const box = new THREE.Mesh(new THREE.BoxGeometry(el.width, ch, d), [side, side, side, side, frontMaterial(el), side]);
-      box.position.set(cx, y0 + (legs ? PLINTH : 0) + ch / 2, d / 2);
-      box.castShadow = true;
-      box.receiveShadow = true;
-      box.userData.main = true;
-      g.add(box);
-      if (legs) {
-        const pd = Math.max(4, d - 6);
-        const plinth = new THREE.Mesh(new THREE.BoxGeometry(el.width - 0.6, PLINTH, pd), material(shade(el.corpusColor, -0.5)));
-        plinth.position.set(cx, PLINTH / 2, pd / 2);
-        g.add(plinth);
+      const yc = y0 + (legs ? PLINTH : 0) + ch / 2;
+      const d = Math.max(2, depthOf(el) || 50);
+      const x0 = it.x;
+      const x1 = it.x + el.width;
+      const cx = (x0 + x1) / 2;
+      const corpus = material(el.type === 'dishwasher' ? '#9ea3a9' : el.corpusColor);
+      const plinthMat = material(shade(el.corpusColor, -0.5));
+      const worktopMat = material(ctx.colors().worktop, { roughness: 0.55 });
+      const side = ctx.cornerSide(it);
+      const kind = side && cornerKind(el);
+
+      // A cabinet body over x a..b, z c..e of the wall frame. `faces` puts fronts on box faces
+      // (order +x, -x, +y, -y, +z, -z); the plinth is set back by `inset` (default 6 cm at the front).
+      const body = (a, b, c, e, faces, inset) => {
+        const mats = [corpus, corpus, corpus, corpus, corpus, corpus];
+        Object.keys(faces || {}).forEach(i => { mats[i] = faces[i]; });
+        const m = new THREE.Mesh(new THREE.BoxGeometry(b - a, ch, e - c), mats);
+        m.position.set((a + b) / 2, yc, (c + e) / 2);
+        m.castShadow = true;
+        m.receiveShadow = true;
+        m.userData.body = true;
+        g.add(m);
+        if (legs) {
+          const s = Object.assign({ a: 0, b: 0, e: 6 }, inset);
+          const p = new THREE.Mesh(new THREE.BoxGeometry(Math.max(1, b - a - s.a - s.b), PLINTH, Math.max(1, e - c - s.e)), plinthMat);
+          p.position.set((a + s.a + b - s.b) / 2, PLINTH / 2, (c + e - s.e) / 2);
+          g.add(p);
+        }
+      };
+      const worktop = (a, b, c, e) => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(b - a, WORKTOP, e - c), worktopMat);
+        m.position.set((a + b) / 2, BASE_HEIGHT + WORKTOP / 2, (c + e) / 2);
+        m.castShadow = true;
+        m.receiveShadow = true;
+        g.add(m);
+      };
+      const door = (w, handle) => frontMaterial(el, { width: w, segments: [{ x: 0, w, kind: 'door', handle }] });
+
+      if (kind === 'L') {
+        // Own arm along this wall, the corner square, and the arm along the neighbouring wall.
+        const a = ctx.armOf(el);
+        if (side === 'right') {
+          body(x0, x1 - a, 0, a, { 4: door(x1 - a - x0, 'right') });
+          body(x1 - a, x1, 0, a, null, { a: 6, e: 0 });
+          body(x1 - a, x1, a, d, { 1: door(d - a, 'left') }, { a: 6, e: 0 });
+        } else {
+          body(x0, x0 + a, 0, a, null, { b: 6, e: 0 });
+          body(x0 + a, x1, 0, a, { 4: door(x1 - x0 - a, 'left') });
+          body(x0, x0 + a, a, d, { 0: door(d - a, 'right') }, { b: 6, e: 0 });
+        }
+        if (el.zone === 'base') {
+          const wd = Math.max(a, 58) + 2;
+          worktop(x0, x1, 0, wd);
+          if (side === 'right') worktop(x1 - wd, x1, wd, d);
+          else worktop(x0, x0 + wd, wd, d);
+        }
+        return g;
       }
+
+      if (kind === 'diagonal') {
+        // Five-sided body; the front runs from the end of this arm to the end of the other one.
+        const a = ctx.armOf(el);
+        const pts = side === 'right'
+          ? [[x0, 0], [x1, 0], [x1, d], [x1 - a, d], [x0, a]]
+          : [[x0, 0], [x1, 0], [x1, a], [x0 + a, d], [x0, d]];
+        const shape = new THREE.Shape(pts.map(([px, pz]) => new THREE.Vector2(px, -pz)));
+        const prism = new THREE.Mesh(new THREE.ExtrudeGeometry(shape, { depth: ch, bevelEnabled: false }), corpus);
+        prism.rotation.x = -Math.PI / 2;
+        prism.position.y = y0;
+        prism.castShadow = true;
+        prism.receiveShadow = true;
+        prism.userData.body = true;
+        g.add(prism);
+        const [pa, pb] = side === 'right' ? [pts[4], pts[3]] : [pts[3], pts[2]];
+        const vx = pb[0] - pa[0];
+        const vz = pb[1] - pa[1];
+        const len = Math.hypot(vx, vz);
+        const nx = -vz / len;
+        const nz = vx / len;
+        const t = 1.8;
+        const segs = el.fronts.doors >= 2
+          ? [{ x: 0, w: len / 2, kind: 'door', handle: 'right' }, { x: len / 2, w: len / 2, kind: 'door', handle: 'left' }]
+          : [{ x: 0, w: len, kind: 'door', handle: side === 'left' ? 'left' : 'right' }];
+        const front = new THREE.Mesh(new THREE.BoxGeometry(len, ch, t), [corpus, corpus, corpus, corpus, frontMaterial(el, { width: len, segments: segs }), corpus]);
+        front.rotation.y = Math.atan2(nx, nz);
+        front.position.set((pa[0] + pb[0]) / 2 + nx * t / 2, yc, (pa[1] + pb[1]) / 2 + nz * t / 2);
+        front.castShadow = true;
+        front.userData.body = true;
+        g.add(front);
+        return g;
+      }
+
+      const front = kind === 'blind'
+        ? frontMaterial(el, { width: el.width, segments: cornerSegments(el, side, ctx.armOf(el)) })
+        : frontMaterial(el);
+      body(x0, x1, 0, d, { 4: front });
       if (el.zone === 'base') {
-        const wd = (el.type === 'base-corner' ? d : Math.max(d, 58)) + 2;
-        const top = new THREE.Mesh(new THREE.BoxGeometry(el.width, WORKTOP, wd), material(ctx.colors().worktop, { roughness: 0.55 }));
-        top.position.set(cx, BASE_HEIGHT + WORKTOP / 2, wd / 2);
-        top.castShadow = true;
-        top.receiveShadow = true;
-        g.add(top);
+        const wd = Math.max(kind === 'blind' ? ctx.armOf(el) : d, 58) + 2;
+        worktop(x0, x1, 0, wd);
         const y = BASE_HEIGHT + WORKTOP;
         if (el.type === 'sink') {
           const steel = material('#aeb4ba', { roughness: 0.3, metalness: 0.6 });
@@ -584,6 +714,7 @@
 
     function clearWorld() {
       if (preview) preview.removeFromParent();
+      if (outline) outline.userData.mats.forEach(m => m.dispose());
       outline = null;
       world.traverse(o => { if (o.geometry) o.geometry.dispose(); });
       world.clear();
@@ -766,19 +897,28 @@
       selected = uid || null;
       if (outline) {
         outline.removeFromParent();
-        outline.children.forEach(c => { c.geometry.dispose(); c.material.dispose(); });
+        outline.children.forEach(c => { if (c.isLineSegments) c.geometry.dispose(); });
+        outline.userData.mats.forEach(m => m.dispose());
         outline = null;
       }
+      // Highlight each body, so an L corner unit gets an L-shaped highlight.
       const g = selected && itemGroups.get(selected);
-      const main = g && g.children.find(c => c.userData.main);
-      if (main) {
+      const bodies = g ? g.children.filter(c => c.userData.body) : [];
+      if (bodies.length) {
         const accent = ctx.colors().accent;
+        const lineMat = new THREE.LineBasicMaterial({ color: accent });
+        const glowMat = new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.16, depthWrite: false });
         outline = new THREE.Group();
-        const edges = new THREE.LineSegments(new THREE.EdgesGeometry(main.geometry), new THREE.LineBasicMaterial({ color: accent }));
-        const glow = new THREE.Mesh(main.geometry.clone(), new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.16, depthWrite: false }));
-        outline.add(edges, glow);
-        outline.position.copy(main.position);
-        outline.scale.setScalar(1.015);
+        outline.userData.mats = [lineMat, glowMat];
+        bodies.forEach(b => {
+          const edges = new THREE.LineSegments(new THREE.EdgesGeometry(b.geometry), lineMat);
+          const glow = new THREE.Mesh(b.geometry, glowMat);
+          [edges, glow].forEach(o => {
+            o.position.copy(b.position);
+            o.scale.setScalar(1.012);
+            outline.add(o);
+          });
+        });
         g.add(outline);
       }
       requestRender();
@@ -855,6 +995,10 @@
     corner: 'ugao',
     cornerTitle: name => `Ovdje je element iz ugla: ${name}`,
     cornerConflict: 'Ta promjena bi izazvala preklapanje u uglu.',
+    cornerPushed: (n, wall) => `Pomjereno elemenata na zidu ${wall}: ${n}, da ugaoni element stane u ugao. Ctrl+Z vraća.`,
+    notInCorner: 'Ugaoni element nije u uglu, pa se crta kao običan element. Prevuci ga na kraj zida koji se spaja s drugim zidom.',
+    cornerBlocked: 'Ugao je zauzet, a elementi drugog zida nemaju gdje da se odmaknu, pa je ugaoni element postavljen van ugla.',
+    cornerNeedsLayout: 'Ugaoni element ima smisla u L ili U rasporedu (dugmad gore lijevo).',
     undo: 'Poništi',
     redo: 'Ponovi',
     clear: 'Očisti',
@@ -1016,11 +1160,13 @@ button{font:inherit;color:inherit}
 .kp-insp-title{font-weight:650}
 .kp-insp-meta{font-size:12.5px;color:var(--kp-muted)}
 .kp-insp-desc{margin:0;font-size:13px;max-width:75ch}
+.kp-insp-warn{margin:0;padding:6px 10px;border-radius:7px;background:#fdf1dc;color:#7a4a00;font-size:13px;max-width:75ch}
 .kp-insp-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px}
 .kp-insp-price{margin-right:6px;font-variant-numeric:tabular-nums}
 
-.kp-cornerblock{position:absolute;display:grid;place-items:center;background:repeating-linear-gradient(-45deg,rgba(0,0,0,.09) 0 3px,transparent 3px 8px);border:1px dashed rgba(0,0,0,.3);pointer-events:none;font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--kp-muted)}
-.kp-cornerblock span{padding:1px 4px;border-radius:3px;background:var(--kp-wall)}
+.kp-cornerblock{position:absolute;pointer-events:none;opacity:.88;outline:1px dashed rgba(0,0,0,.45);outline-offset:-1px}
+.kp-cornerblock svg{display:block;width:100%;height:100%}
+.kp-cornerblock span{position:absolute;left:3px;top:3px;padding:0 4px;border-radius:3px;background:rgba(255,255,255,.85);color:#55595f;font-size:9px;font-weight:600;letter-spacing:.05em;text-transform:uppercase}
 .kp-seg.kp-text button{width:auto;padding:0 12px;font-weight:650;font-size:13px}
 .kp-3d{position:relative;flex:1;min-height:0;overflow:hidden;background:var(--kp-surface)}
 .kp-3d-canvas{position:absolute;inset:0;display:block;width:100%;height:100%;outline:none;cursor:grab;touch-action:none}
@@ -1270,6 +1416,110 @@ button{font:inherit;color:inherit}
       return out;
     }
 
+    // Depth of the regular units of the same line; the arms of an L corner unit match it.
+    const armCache = new Map();
+    function armOf(el) {
+      const key = el.series + '|' + el.zone;
+      if (!armCache.has(key)) {
+        const types = el.zone === 'wall' ? ['wall', 'wall-glass', 'wall-flap'] : ['base', 'drawers', 'sink', 'oven'];
+        const counts = {};
+        catalog.forEach(e => {
+          if (e.series === el.series && types.includes(e.type) && e.depth > 0) counts[e.depth] = (counts[e.depth] || 0) + 1;
+        });
+        const top = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+        armCache.set(key, top ? +top : el.zone === 'wall' ? 32 : 52);
+      }
+      return Math.max(10, Math.min(armCache.get(key), el.width - 10, depthOf(el) - 10));
+    }
+
+    // Which end of its wall a corner unit stands in ('left' / 'right'), or null if not in a corner.
+    function cornerSideOf(item) {
+      const el = get(item.id);
+      if (!el || !cornerKind(el)) return null;
+      const idx = state.walls.findIndex(w => w.id === item.wall);
+      const wall = state.walls[idx];
+      if (!wall) return null;
+      if (idx < state.walls.length - 1 && item.x + el.width >= wall.width - 1) return 'right';
+      if (idx > 0 && item.x <= 1) return 'left';
+      return null;
+    }
+
+    /**
+     * A corner unit dropped near a wall end that meets another wall goes into that corner.
+     * Elements of the other wall that stand in the corner are pushed along their wall to make
+     * room. Returns { x, moves: Map(uid -> x) } or null when no corner is near or free.
+     */
+    function cornerPlacement(wallId, el, desired, exceptUid, reach) {
+      if (!cornerKind(el)) return null;
+      const idx = state.walls.findIndex(w => w.id === wallId);
+      const wall = state.walls[idx];
+      if (!wall || el.width > wall.width) return null;
+      const ends = [];
+      if (state.walls[idx + 1]) ends.push({ x: wall.width - el.width, nb: state.walls[idx + 1], atNbStart: true });
+      if (state.walls[idx - 1]) ends.push({ x: 0, nb: state.walls[idx - 1], atNbStart: false });
+      const limit = reach == null ? Math.max(el.width, 100) : reach;
+      const options = ends
+        .filter(e => Math.abs(e.x - desired) <= limit)
+        .sort((a, b) => Math.abs(a.x - desired) - Math.abs(b.x - desired));
+      for (const end of options) {
+        const moves = pushPlan(end, el, exceptUid);
+        const trial = state.items
+          .filter(i => i.uid !== exceptUid)
+          .map(i => (moves.has(i.uid) ? Object.assign({}, i, { x: moves.get(i.uid) }) : i))
+          .concat({ uid: '__corner', id: el.id, wall: wallId, x: end.x });
+        const ok = trial.every(i => {
+          const w = state.walls.find(v => v.id === i.wall);
+          const e = get(i.id);
+          return fitsAmong(w.width, blockers(i.wall, e, i.uid, trial), e, i.x);
+        });
+        if (ok) return { x: end.x, moves };
+      }
+      return null;
+    }
+
+    // Shift the other wall's elements out of the corner, keeping their order.
+    function pushPlan(end, el, exceptUid) {
+      const span = depthOf(el);
+      const list = state.items.filter(i => i.wall === end.nb.id && i.uid !== exceptUid && ROW_MASK[get(i.id).zone] & ROW_MASK[el.zone]);
+      const moves = new Map();
+      if (end.atNbStart) {
+        let cursor = span;
+        list.sort((a, b) => a.x - b.x).forEach(i => {
+          const w = get(i.id).width;
+          if (i.x < cursor) {
+            moves.set(i.uid, cursor);
+            cursor += w;
+          } else cursor = i.x + w;
+        });
+      } else {
+        let cursor = end.nb.width - span;
+        list.sort((a, b) => b.x - a.x).forEach(i => {
+          const w = get(i.id).width;
+          if (i.x + w > cursor) {
+            moves.set(i.uid, cursor - w);
+            cursor -= w;
+          } else cursor = i.x;
+        });
+      }
+      return moves;
+    }
+
+    function applyMoves(moves) {
+      if (!moves || !moves.size) return;
+      state.items.forEach(i => { if (moves.has(i.uid)) i.x = moves.get(i.uid); });
+    }
+
+    function warnIfOutOfCorner(uid) {
+      const it = state.items.find(i => i.uid === uid);
+      if (it && cornerKind(get(it.id)) && state.walls.length > 1 && !cornerSideOf(it)) toast(L.cornerBlocked);
+    }
+
+    function reportMoves(moves) {
+      if (!moves || !moves.size) return;
+      const wall = state.items.find(i => moves.has(i.uid)).wall;
+      toast(L.cornerPushed(moves.size, wall));
+    }
+
     function layoutValid() {
       return state.items.every(i => {
         const w = wallById(i.wall);
@@ -1410,6 +1660,11 @@ button{font:inherit;color:inherit}
       if (!el || el.zone === 'accessory') return null;
       const order = [preferWall || state.ui.activeWall].concat(state.walls.map(w => w.id));
       for (const wallId of order) {
+        const wall = wallById(wallId);
+        const cp = wall && cornerPlacement(wallId, el, wall.width - el.width, null, Infinity);
+        if (cp) return placeNew(el, wallId, cp.x, cp.moves);
+      }
+      for (const wallId of order) {
         const x = firstFree(wallId, el);
         if (x != null) return placeNew(el, wallId, x);
       }
@@ -1417,21 +1672,32 @@ button{font:inherit;color:inherit}
       return null;
     }
 
-    function placeNew(el, wallId, x) {
+    function placeNew(el, wallId, x, moves) {
       const item = { uid: newUid(), id: el.id, wall: wallId, x };
       lastAdded = item.uid;
       state.ui.selected = item.uid;
       state.ui.activeWall = wallId;
-      commit(() => state.items.push(item));
+      commit(() => {
+        applyMoves(moves);
+        state.items.push(item);
+      });
+      reportMoves(moves);
+      warnIfOutOfCorner(item.uid);
       return item.uid;
     }
 
-    function moveItem(uid, wallId, x) {
+    function moveItem(uid, wallId, x, moves) {
       const it = state.items.find(i => i.uid === uid);
       if (!it) return;
       state.ui.activeWall = wallId;
       state.ui.selected = uid;
-      commit(() => { it.wall = wallId; it.x = x; });
+      commit(() => {
+        applyMoves(moves);
+        it.wall = wallId;
+        it.x = x;
+      });
+      reportMoves(moves);
+      warnIfOutOfCorner(uid);
     }
 
     function removeItem(uid) {
@@ -1873,7 +2139,7 @@ button{font:inherit;color:inherit}
       const p = priceOf(el);
       const name = state.ui.series ? shortName(el).replace(new RegExp('^' + el.series.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&') + '\\s*'), '') : shortName(el);
       return `<button type="button" class="kp-card" data-add="${esc(el.id)}" title="${esc(el.fullName)}" aria-label="${esc(L.add + ': ' + el.fullName)}">
-  <span class="kp-thumb">${drawSvg(el, { thumb: true })}</span>
+  <span class="kp-thumb">${drawSvg(el, { thumb: true, segments: cornerKind(el) ? cornerSegments(el, 'right', armOf(el)) : null })}</span>
   <span class="kp-card-body">
     <span class="kp-card-name">${esc(name)}</span>
     <span class="kp-card-meta">${esc(L.types[el.type])} · ${el.width}×${el.height}×${el.depth}</span>
@@ -1929,14 +2195,17 @@ button{font:inherit;color:inherit}
       };
       const free = row => Math.max(0, W - used(row) - blocked(row));
       const parts = [];
+      // What the neighbouring wall's corner element looks like from this wall.
       blocks.forEach(b => {
         const y = b.el.zone === 'wall' ? wallTop - b.el.height : 0;
-        const h = b.el.zone === 'base' ? BASE_HEIGHT + WORKTOP : renderHeight(b.el);
-        parts.push(`<div class="kp-cornerblock" title="${esc(L.cornerTitle(shortName(b.el)))}" style="left:${px(b.x)};bottom:${px(y)};width:${px(b.w)};height:${px(h)}">${b.w * scale > 36 ? `<span>${esc(L.corner)}</span>` : ''}</div>`);
+        const segs = cornerKind(b.el) === 'L' || cornerKind(b.el) === 'diagonal'
+          ? cornerSegments(b.el, b.atStart ? 'left' : 'right', armOf(b.el), b.w)
+          : [{ x: 0, w: b.w, kind: 'side' }];
+        parts.push(`<div class="kp-cornerblock" title="${esc(L.cornerTitle(shortName(b.el)))}" style="left:${px(b.x)};bottom:${px(y)};width:${px(b.w)};height:${px(renderHeight(b.el))}">${drawSvg(b.el, { width: b.w, segments: segs })}${b.w * scale > 40 ? `<span>${esc(L.corner)}</span>` : ''}</div>`);
       });
       parts.push(`<div class="kp-guide" style="bottom:${px(BASE_HEIGHT + WORKTOP)}"><span>${BASE_HEIGHT + WORKTOP} cm</span></div>`);
       parts.push(`<div class="kp-guide" style="bottom:${px(wallTop)}"><span>${wallTop} cm</span></div>`);
-      worktopRuns(items).forEach(r => {
+      worktopRuns(items, blocks).forEach(r => {
         parts.push(`<div class="kp-worktop" style="left:${px(r.x)};width:${px(r.w)};bottom:${px(BASE_HEIGHT)};height:${px(WORKTOP)}"></div>`);
       });
       items.forEach(i => {
@@ -1944,7 +2213,9 @@ button{font:inherit;color:inherit}
         const y = el.zone === 'wall' ? wallTop - el.height : 0;
         const cls = 'kp-item' + (i.uid === state.ui.selected ? ' is-selected' : '') + (i.uid === lastAdded ? ' is-new' : '');
         const label = `${shortName(el)}, ${el.width} cm, ${i.x} cm od lijevog ruba`;
-        parts.push(`<div class="${cls}" data-uid="${i.uid}" tabindex="0" role="button" aria-label="${esc(label)}" title="${esc(shortName(el))}" style="left:${px(i.x)};bottom:${px(y)};width:${px(el.width)};height:${px(renderHeight(el))}">${drawSvg(el)}</div>`);
+        const side = cornerSideOf(i);
+        const svg = drawSvg(el, side ? { segments: cornerSegments(el, side, armOf(el)) } : null);
+        parts.push(`<div class="${cls}" data-uid="${i.uid}" tabindex="0" role="button" aria-label="${esc(label)}" title="${esc(shortName(el))}" style="left:${px(i.x)};bottom:${px(y)};width:${px(el.width)};height:${px(renderHeight(el))}">${svg}</div>`);
         if (el.type === 'sink') {
           parts.push(`<div class="kp-decor" style="left:${px(i.x + el.width / 2 - 8)};bottom:${px(BASE_HEIGHT + WORKTOP)};width:${px(16)};height:${px(24)}">${FAUCET_SVG}</div>`);
         } else if (el.type === 'oven') {
@@ -1974,17 +2245,18 @@ button{font:inherit;color:inherit}
       const next = state.walls[index + 1];
       const reach = el => (el.zone === 'wall' ? 30 : 46);
       const out = new Map();
-      const add = (x, el) => out.set(`${x}:${depthOf(el)}:${el.zone}`, { x, w: depthOf(el), el });
+      const add = (x, el, atStart) => out.set(`${x}:${depthOf(el)}:${el.zone}`, { x, w: depthOf(el), el, atStart });
       state.items.forEach(i => {
         const el = get(i.id);
-        if (prev && i.wall === prev.id && i.x + el.width > prev.width - reach(el)) add(0, el);
-        if (next && i.wall === next.id && i.x < reach(el)) add(wall.width - depthOf(el), el);
+        if (prev && i.wall === prev.id && i.x + el.width > prev.width - reach(el)) add(0, el, true);
+        if (next && i.wall === next.id && i.x < reach(el)) add(wall.width - depthOf(el), el, false);
       });
       return [...out.values()];
     }
 
-    function worktopRuns(items) {
+    function worktopRuns(items, blocks) {
       const base = items.map(i => ({ x: i.x, w: get(i.id).width, zone: get(i.id).zone }))
+        .concat((blocks || []).map(b => ({ x: b.x, w: b.w, zone: b.el.zone })))
         .filter(o => o.zone === 'base')
         .sort((a, b) => a.x - b.x);
       const runs = [];
@@ -2025,6 +2297,7 @@ ${el.images[0] ? `<img class="kp-photo" src="${esc(el.images[0])}" alt="" loadin
 <div class="kp-insp-body">
   <div class="kp-insp-title">${esc(el.fullName)}</div>
   <div class="kp-insp-meta">${esc(L.sku)} ${esc(el.sku)} · ${el.width} × ${el.height} × ${el.depth} cm · ${esc(el.color)}${el.withWorktop ? ' · ' + esc(L.withWorktop) : ''}</div>
+  ${cornerKind(el) && !cornerSideOf(it) ? `<p class="kp-insp-warn">${esc(state.walls.length < 2 ? L.cornerNeedsLayout : L.notInCorner)}</p>` : ''}
   ${el.description ? `<p class="kp-insp-desc">${esc(el.description)}</p>` : ''}
   <div class="kp-insp-actions">
     <strong class="kp-insp-price">${esc(p != null ? nf.format(p) : L.priceOnRequest)}</strong>
@@ -2298,9 +2571,11 @@ ${el.images[0] ? `<img class="kp-photo" src="${esc(el.images[0])}" alt="" loadin
         hit = stageAt(cx, cy);
         if (hit) desired = (cx - hit.r.left) / scale - d.grabX;
       }
-      const x = hit ? resolveX(hit.wallId, d.el, desired, d.item && d.item.uid) : null;
+      const exceptUid = d.item && d.item.uid;
+      const cp = hit ? cornerPlacement(hit.wallId, d.el, desired, exceptUid) : null;
+      const x = cp ? cp.x : hit ? resolveX(hit.wallId, d.el, desired, exceptUid) : null;
       d.overWall = !!hit;
-      d.target = hit && x != null ? { wall: hit.wallId, x } : null;
+      d.target = hit && x != null ? { wall: hit.wallId, x, moves: cp && cp.moves } : null;
       const st = hit && hit.st;
       if (d.stage && d.stage !== st) d.stage.classList.remove('is-target');
       d.stage = st || null;
@@ -2351,8 +2626,8 @@ ${el.images[0] ? `<img class="kp-photo" src="${esc(el.images[0])}" alt="" loadin
       suppressClick = true;
       setTimeout(() => { suppressClick = false; }, 0);
       if (d.target) {
-        if (d.item) moveItem(d.item.uid, d.target.wall, d.target.x);
-        else placeNew(d.el, d.target.wall, d.target.x);
+        if (d.item) moveItem(d.item.uid, d.target.wall, d.target.x, d.target.moves);
+        else placeNew(d.el, d.target.wall, d.target.x, d.target.moves);
       } else if (d.item && !d.overWall && !d.over3d) {
         removeItem(d.item.uid);
       } else if (!d.item && d.overWall) {
@@ -2413,6 +2688,8 @@ ${el.images[0] ? `<img class="kp-photo" src="${esc(el.images[0])}" alt="" loadin
             state: () => state,
             get,
             wallTop,
+            cornerSide: cornerSideOf,
+            armOf,
             colors() {
               const cs = getComputedStyle(host);
               const v = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
